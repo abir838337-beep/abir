@@ -17,12 +17,27 @@ const fs = defaultRequire("fs-extra");
 const toptp = defaultRequire("totp-generator");
 const login = defaultRequire(`${process.cwd()}/fb-chat-api`);
 const qr = new (defaultRequire("qrcode-reader"));
-const Canvas = defaultRequire("canvas");
+// canvas is only needed to read a QR image at login. It has no prebuilt binary for new Node
+// versions / Termux, so it must never be able to stop the bot from starting.
+let Canvas = null;
+try { Canvas = defaultRequire("canvas"); }
+catch (e) { try { Canvas = defaultRequire("@napi-rs/canvas"); } catch (e2) { /* optional */ } }
 const https = defaultRequire("https");
+
+// UTC time for temporary-ban checks; falls back to the local clock if the time API is down
+async function getUtcNow() {
+	try {
+		const res = await axios.get("http://worldtimeapi.org/api/timezone/UTC", { timeout: 8000 });
+		return new Date(res.data.utc_datetime).getTime();
+	}
+	catch (e) {
+		return Date.now();
+	}
+}
 
 async function getName(userID) {
 	try {
-		const user = await axios.post(`https://www.facebook.com/api/graphql/?q=${`node(${userID}){name}`}`);
+		const user = await axios.post(`https://www.facebook.com/api/graphql/?q=${`node(${userID}){name}`}`, undefined, { timeout: 10000 });
 		return user.data[userID].name;
 	}
 	catch (error) {
@@ -181,6 +196,7 @@ async function input(prompt, isPassword = false) {
 }
 
 qr.readQrCode = async function (filePath) {
+	if (!Canvas) throw new Error("The 'canvas' module is not installed (only needed for QR-image login)");
 	const image = await Canvas.loadImage(filePath);
 	const canvas = Canvas.createCanvas(image.width, image.height);
 	const ctx = canvas.getContext("2d");
@@ -626,7 +642,13 @@ function stopListening(keyListen) {
 async function startBot(loginWithEmail) {
 	console.log(colors.hex("#f5ab00")(createLine("START LOGGING IN", true)));
 	const currentVersion = require("../../package.json").version;
-	const tooOldVersion = (await axios.get("https://raw.githubusercontent.com/ntkhang03/Goat-Bot-V2-Storage/main/tooOldVersions.txt")).data || "0.0.0";
+	let tooOldVersion = "0.0.0";
+	try {
+		tooOldVersion = String((await axios.get("https://raw.githubusercontent.com/ntkhang03/Goat-Bot-V2-Storage/main/tooOldVersions.txt", { timeout: 15000 })).data || "0.0.0").trim();
+	}
+	catch (e) {
+		log.warn("VERSION", "Could not check the version list (network). Continuing...");
+	}
 	// nếu version cũ hơn
 	if ([-1, 0].includes(compareVersion(currentVersion, tooOldVersion))) {
 		log.err("VERSION", getText('version', 'tooOldVersion', colors.yellowBright('node update')));
@@ -709,7 +731,7 @@ async function startBot(loginWithEmail) {
 					return;
 				}
 				else {
-					process.exit();
+					process.exit(1);
 				}
 			}
 
@@ -730,7 +752,7 @@ async function startBot(loginWithEmail) {
 
 			try {
 				// convert to promise
-				const item = await axios.get("https://raw.githubusercontent.com/Savage-Army/gban/refs/heads/main/gban.json");
+				const item = await axios.get("https://raw.githubusercontent.com/Savage-Army/gban/refs/heads/main/gban.json", { timeout: 15000 });
 				dataGban = item.data;
 
 				// ————————————————— CHECK BOT ————————————————— //
@@ -741,7 +763,7 @@ async function startBot(loginWithEmail) {
 						hasBanned = true;
 					}
 					else {
-						const currentDate = (new Date((await axios.get("http://worldtimeapi.org/api/timezone/UTC")).data.utc_datetime)).getTime();
+						const currentDate = await getUtcNow();
 						if (currentDate < (new Date(dataGban[botID].date)).getTime()) {
 							log.err('GBAN', getText('login', 'gbanMessage', dataGban[botID].date, dataGban[botID].reason, dataGban[botID].date, dataGban[botID].toDate));
 							hasBanned = true;
@@ -756,7 +778,7 @@ async function startBot(loginWithEmail) {
 							hasBanned = true;
 						}
 						else {
-							const currentDate = (new Date((await axios.get("http://worldtimeapi.org/api/timezone/UTC")).data.utc_datetime)).getTime();
+							const currentDate = await getUtcNow();
 							if (currentDate < (new Date(dataGban[idad].date)).getTime()) {
 								log.err('GBAN', getText('login', 'gbanMessage', dataGban[idad].date, dataGban[idad].reason, dataGban[idad].date, dataGban[idad].toDate));
 								hasBanned = true;
@@ -768,19 +790,17 @@ async function startBot(loginWithEmail) {
 					process.exit();
 			}
 			catch (e) {
-				console.log(e);
-				log.err('GBAN', getText('login', 'checkGbanError'));
-				process.exit();
+				// A network hiccup must not switch the bot off. Ban data that WAS loaded is still enforced above.
+				log.warn('GBAN', getText('login', 'checkGbanError'));
 			}
 			// ———————————————— NOTIFICATIONS ———————————————— //
 			let notification;
 			try {
-				const getNoti = await axios.get("https://raw.githubusercontent.com/ntkhang03/Goat-Bot-V2-Gban/master/notification.txt");
+				const getNoti = await axios.get("https://raw.githubusercontent.com/ntkhang03/Goat-Bot-V2-Gban/master/notification.txt", { timeout: 15000 });
 				notification = getNoti.data;
 			}
 			catch (err) {
-				log.err("ERROR", "Can't get notifications data");
-				process.exit();
+				log.warn("NOTIFICATION", "Can't get notifications data (skipped)");
 			}
 			if (global.GoatBot.config.autoRefreshFbstate == true) {
 				changeFbStateByCode = true;
@@ -1087,8 +1107,10 @@ async function startBot(loginWithEmail) {
 				const express = require('express');
 				const app = express();
 				const server = http.createServer(app);
-				const { data: html } = await axios.get("https://raw.githubusercontent.com/ntkhang03/resources-goat-bot/master/homepage/home.html");
-				const PORT = global.GoatBot.config.dashBoard?.port || (!isNaN(global.GoatBot.config.serverUptime.port) && global.GoatBot.config.serverUptime.port) || 3001;
+				let html = "<h1>Aliya Official V4 is running</h1>";
+				try { html = (await axios.get("https://raw.githubusercontent.com/ntkhang03/resources-goat-bot/master/homepage/home.html", { timeout: 10000 })).data; }
+				catch (e) { /* use the built-in page */ }
+				const PORT = process.env.PORT || global.GoatBot.config.dashBoard?.port || (!isNaN(global.GoatBot.config.serverUptime.port) && global.GoatBot.config.serverUptime.port) || 3001;
 				app.get('/', (req, res) => res.send(html));
 				app.get('/uptime', global.responseUptimeCurrent);
 				let nameUpTime;
@@ -1157,4 +1179,7 @@ async function startBot(loginWithEmail) {
 }
 
 global.GoatBot.reLoginBot = startBot;
-startBot();
+startBot().catch(err => {
+	log.err("LOGIN FACEBOOK", "startBot failed", err);
+	process.exit(1);
+});
