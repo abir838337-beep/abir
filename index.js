@@ -314,7 +314,8 @@ async function startBot() {
 		if (shuttingDown) return;
 
 		// Code 2 = the bot asked for a restart (auto-restart / new fbstate from dashboard)
-		if (code === 2) {
+		// (only when the run was healthy - a dead cookie must not cause a fast login loop on Facebook)
+		if (code === 2 && ranMs >= 60000) {
 			failStreak = 0;
 			return scheduleRestart(QUICK_RESTART_MS);
 		}
