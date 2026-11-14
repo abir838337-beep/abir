@@ -921,6 +921,40 @@ async function startBot(loginWithEmail) {
 			// ——————————————————————————————————————————————————— //
 			const { restartListenMqtt } = global.GoatBot.config;
 			let intervalCheckLiveCookieAndRelogin = false;
+
+			// ——————————— SELF-HEALING LISTENER ——————————— //
+			// Before: any MQTT error was only logged, nothing reconnected -> bot silently deaf while the server stayed "Live".
+			let lastListenActivity = Date.now();
+			let relistenTimer = null;
+			const listenFailTimes = [];
+			function recoverListener(reason) {
+				if (relistenTimer)
+					return;
+				const nowMs = Date.now();
+				listenFailTimes.push(nowMs);
+				while (listenFailTimes.length && nowMs - listenFailTimes[0] > 10 * 60 * 1000)
+					listenFailTimes.shift();
+				if (listenFailTimes.length >= 4) {
+					log.err("LISTEN_MQTT", "Listener keeps failing - restarting the whole bot...");
+					return process.exit(2);
+				}
+				const delay = 5000 * listenFailTimes.length;
+				log.warn("LISTEN_MQTT", `Listener lost (${reason}). Reconnecting in ${delay / 1000}s...`);
+				relistenTimer = setTimeout(async () => {
+					relistenTimer = null;
+					try {
+						await stopListening();
+						await sleep(1000);
+						lastListenActivity = Date.now();
+						global.GoatBot.Listening = api.listenMqtt(createCallBackListen());
+						log.info("LISTEN_MQTT", "Reconnected.");
+					}
+					catch (e) {
+						log.err("LISTEN_MQTT", "Reconnect failed - restarting the whole bot", e);
+						process.exit(2);
+					}
+				}, delay);
+			}
 			// —————————————————— CALLBACK LISTEN —————————————————— //
 			async function callBackListen(error, event) {
 				if (error) {
@@ -983,11 +1017,14 @@ async function startBot(loginWithEmail) {
 					}
 					else {
 						await handlerWhenListenHasError({ api, threadModel, userModel, dashBoardModel, globalModel, threadsData, usersData, dashBoardData, globalData, error });
-						return log.err("LISTEN_MQTT", getText('login', 'callBackError'), error);
+						log.err("LISTEN_MQTT", getText('login', 'callBackError'), error);
+						recoverListener("MQTT error");
+						return;
 					}
 				}
 				global.responseUptimeCurrent = responseUptimeSuccess;
 				global.statusAccountBot = 'good';
+				lastListenActivity = Date.now();
 				const configLog = global.GoatBot.config.logEvents;
 				if (isSendNotiErrorMessage == true)
 					isSendNotiErrorMessage = false;
@@ -1154,10 +1191,21 @@ async function startBot(loginWithEmail) {
 					}
 					catch (e) {
 						log.err("LISTEN_MQTT", getText('login', 'restartListenMessageError'), e);
+						recoverListener("hourly restart failed");
 					}
 				}, restartListenMqtt.timeRestart);
 				global.intervalRestartListenMqtt = restart;
 			}
+			// Watchdog: a half-open connection (cloud NAT drops idle TCP without telling us) emits no error at all.
+			// No event of any kind for 20 min -> reconnect quietly (same thing the hourly restart does).
+			if (global.intervalListenWatchdog)
+				clearInterval(global.intervalListenWatchdog);
+			global.intervalListenWatchdog = setInterval(() => {
+				if (Date.now() - lastListenActivity > 20 * 60 * 1000) {
+					lastListenActivity = Date.now();
+					recoverListener("no MQTT activity for 20 min");
+				}
+			}, 60 * 1000);
 			require('../autoUptime.js');
 		});
 	})(appState);
