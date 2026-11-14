@@ -12,6 +12,23 @@ const { GoatBot } = global;
 const { configCommands } = GoatBot;
 const regExpCheckPackage = /require(\s+|)\((\s+|)[`'"]([^`'"]+)[`'"](\s+|)\)/g;
 const packageAlready = [];
+const { builtinModules } = require("module");
+
+// Node built-ins (fs, path, os, https, child_process...) and anything already resolvable must NEVER be
+// "installed" - otherwise every boot runs `npm install fs` etc. (slow, and wipes out on Render/Replit restarts)
+function isBuiltinOrInstalled(name) {
+	if (name.startsWith("node:") || builtinModules.includes(name))
+		return true;
+	if (existsSync(`${process.cwd()}/node_modules/${name}`))
+		return true;
+	try {
+		require.resolve(name, { paths: [process.cwd()] });
+		return true;
+	}
+	catch (e) {
+		return false;
+	}
+}
 // const spinner = '\\|/-';
 const spinner = [
 	'⠋', '⠙', '⠹',
@@ -87,12 +104,17 @@ module.exports = async function (api, threadModel, userModel, dashBoardModel, gl
 
 						if (!packageAlready.includes(packageName)) {
 							packageAlready.push(packageName);
-							if (!existsSync(`${process.cwd()}/node_modules/${packageName}`)) {
-								const wating = setInterval(() => {
-									// loading.info('PACKAGE', `${spinner[count % spinner.length]} Installing package ${packageName} for ${text} ${file}`);
-									loading.info('PACKAGE', `${spinner[count % spinner.length]} Installing package ${colors.yellow(packageName)} for ${text} ${colors.yellow(file)}`);
-									count++;
-								}, 80);
+							if (!isBuiltinOrInstalled(packageName)) {
+								// Spinner only in a real terminal. Cloud log pages (Render...) would get thousands of lines.
+								let wating = null;
+								if (process.stderr.isTTY) {
+									wating = setInterval(() => {
+										loading.info('PACKAGE', `${spinner[count % spinner.length]} Installing package ${colors.yellow(packageName)} for ${text} ${colors.yellow(file)}`);
+										count++;
+									}, 80);
+								}
+								else
+									console.log(`📦 Installing package ${packageName} for ${text} ${file} ...`);
 								try {
 									await exec(`npm install ${packageName} --${pathCommand.endsWith('.dev.js') ? 'no-save' : 'save'}`);
 									clearInterval(wating);
