@@ -47,6 +47,14 @@ function validJSON(pathDir) {
 	}
 }
 
+// Fresh deploys (Render/Railway/Replit...) may not have account.txt yet: create an empty
+// one instead of crashing. Add your cookie there, or use email/password in config.json.
+try {
+	const accTxt = path.join(__dirname, "account.txt");
+	const accDevTxt = path.join(__dirname, "account.dev.txt");
+	if (!fs.existsSync(accTxt) && !fs.existsSync(accDevTxt)) fs.writeFileSync(accTxt, "");
+} catch (err) { /* read-only disk: getConfigPath below will report it */ }
+
 const dirConfig = getConfigPath("config", ".json");
 const dirConfigCommands = getConfigPath("configCommands", ".json");
 const dirAccount = getConfigPath("account", ".txt");
@@ -164,8 +172,15 @@ const watchAndReloadConfig = (dir, type, prop, logName) => {
 	});
 };
 
-watchAndReloadConfig(dirConfigCommands, 'change', 'configCommands', 'CONFIG COMMANDS');
-watchAndReloadConfig(dirConfig, 'change', 'config', 'CONFIG');
+// fs.watch can fail on some hosts (inotify limit, Termux, Docker volumes) - never let that stop the bot
+for (const [dir, prop, name] of [[dirConfigCommands, 'configCommands', 'CONFIG COMMANDS'], [dirConfig, 'config', 'CONFIG']]) {
+	try {
+		watchAndReloadConfig(dir, 'change', prop, name);
+	}
+	catch (err) {
+		log.warn(name, `Hot-reload disabled: ${err.message}`);
+	}
+}
 
 global.GoatBot.envGlobal = global.GoatBot.configCommands.envGlobal;
 global.GoatBot.envCommands = global.GoatBot.configCommands.envCommands;
@@ -193,7 +208,14 @@ if (config.autoRestart) {
 }
 
 // Async Main Bootstrapper
-(async () => {
+const withTimeout = (promise, ms, label) => Promise.race([
+	promise,
+	new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s`)), ms))
+]);
+
+// Gmail + Google Drive are optional extras. They run in the background so a slow or
+// blocked Google API can never delay (or hang) the Facebook login.
+async function initGoogleServices() {
 	// 1. Gmail & OAuth2 Setup
 	try {
 		const { gmailAccount } = config.credentials || {};
@@ -202,8 +224,8 @@ if (config.autoRestart) {
 			const OAuth2 = google.auth.OAuth2;
 			const OAuth2_client = new OAuth2(clientId, clientSecret);
 			OAuth2_client.setCredentials({ refresh_token: refreshToken });
-			
-			const accessToken = await OAuth2_client.getAccessToken();
+
+			const accessToken = await withTimeout(OAuth2_client.getAccessToken(), 15000, "Gmail token");
 			const transporter = nodemailer.createTransport({
 				host: 'smtp.gmail.com',
 				service: 'Gmail',
@@ -229,14 +251,17 @@ if (config.autoRestart) {
 	// 2. Google Drive Setup
 	try {
 		if (utils.drive && typeof utils.drive.checkAndCreateParentFolder === "function") {
-			utils.drive.parentID = await utils.drive.checkAndCreateParentFolder("AliyaBot");
+			utils.drive.parentID = await withTimeout(utils.drive.checkAndCreateParentFolder("AliyaBot"), 20000, "Google Drive");
 		}
 	} catch (err) {
 		log.warn("GDRIVE_INIT", "Google Drive bypass: " + err.message);
 	}
+}
 
-	// 3. Trigger Core Login
+(async () => {
+	initGoogleServices().catch(err => log.warn("GOOGLE_INIT", err.message));
+
+	// 3. Trigger Core Login (immediately - no waiting for Google)
 	console.log("\x1b[35m\x1b[1m👑 ALIYA V4\x1b[0m \x1b[90m|\x1b[0m \x1b[36mStarting login...\x1b[0m \x1b[90m|\x1b[0m \x1b[32mMulti-group mode ON\x1b[0m");
 	require(`./bot/login/login.js`);
 })();
-	

@@ -1,13 +1,10 @@
 { pkgs }: {
-	deps = [
-	 pkgs.postgresql
-	 pkgs.unzip
-		pkgs.nodejs-16_x
-		pkgs.nodePackages.typescript-language-server
-		pkgs.libuuid
-		pkgs.replitPackages.jest
-	];
-	env = {
-		LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [pkgs.libuuid];
-	};
+  # Node itself comes from `modules` in .replit. These are only build tools
+  # (used if sqlite3 has to compile on your Repl).
+  deps = [
+    pkgs.python3
+    pkgs.gnumake
+    pkgs.gcc
+    pkgs.unzip
+  ];
 }

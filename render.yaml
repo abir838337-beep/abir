@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: aliya-official-v4
+    runtime: node
+    plan: free
+    buildCommand: npm install --omit=dev --no-audit --no-fund
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "22"          # use "26" if Render lists it
+      - key: ACCOUNT_TXT_B64 # base64 of account.txt (set it in the dashboard)
+        sync: false
