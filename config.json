@@ -83,9 +83,9 @@
     "time": null
   },
   "autoUptime": {
-    "enable": false,
-    "timeInterval": 180,
-    "url": ""
+  "enable": true,
+  "timeInterval": 180,
+  "url": "https://aliya-official-v4-personal-1.onrender.com/health"
   },
   "autoLoadScripts": {
     "enable": false,
