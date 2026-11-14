@@ -79,5 +79,8 @@
     "sqlite3": true,
     "es5-ext": true,
     "sharp": true
+  },
+  "overrides": {
+    "canvas": "npm:@napi-rs/canvas@^0.1.0"
   }
 }
