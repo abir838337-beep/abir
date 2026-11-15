@@ -1,165 +1,138 @@
-// Banner Image: https://files.catbox.moe/ixj7u8.jpg
-
 const axios = require("axios");
 const { createCanvas, loadImage } = require("canvas");
 const fs = require("fs");
 const path = require("path");
 
+const baseUrl = "https://raw.githubusercontent.com/Saim12678/Saim69/1a8068d7d28396dbecff28f422cb8bc9bf62d85f/font";
+
 module.exports = {
   config: {
     name: "pair2",
-    version: "2.0.0",
-    author: "𝔐𝔯.𝔎𝔦𝔫𝔤 ☠️✌🏼",
-    countDown: 10,
+    aliases: ["lovepair2", "match2"],
+    author: "𝔐𝔯.𝔎𝔦𝔫𝔤",
+    version: "2.1",
     role: 0,
     category: "love",
-    guide: { en: "{p}pair2" }
+    shortDescription: {
+      en: "💘 Generate a love match with boxed profile pictures"
+    },
+    longDescription: {
+      en: "Calculates a love match between group members with custom background and right-side boxed avatars."
+    },
+    guide: {
+      en: "{p}{n} — Find a love match"
+    }
   },
 
-  onStart: async function ({ api, event, usersData, message }) {
-    const { threadID, messageID, senderID } = event;
-    const cost = 10000; 
-
-    // ১. ব্যালেন্স চেক
-    const senderData = await usersData.get(senderID);
-    const currentBalance = senderData.money || 0;
-    if (currentBalance < cost) {
-      return api.sendMessage("⚠️ আপনার পর্যাপ্ত ব্যালেন্স নেই! ম্যাচ খুঁজতে ১০,০০০ (10k) প্রয়োজন।", threadID, messageID);
-    }
-
+  onStart: async function ({ api, event, usersData }) {
     try {
-      api.setMessageReaction("✨", messageID, (err) => {}, true);
+      const senderData = await usersData.get(event.senderID);
+      let senderName = senderData.name;
 
-      const threadData = await api.getThreadInfo(threadID);
-      const { userInfo } = threadData;
+      const threadData = await api.getThreadInfo(event.threadID);
+      const users = threadData.userInfo;
 
-      // যে ইউজার কমান্ড রান করেছে তার ডাটা
-      const currentUser = userInfo.find(u => u.id === senderID);
-      if (!currentUser || !currentUser.gender) {
-        return api.sendMessage("⚠️ আপনার প্রোফাইলে জেন্ডার সেট করা নেই!", threadID, messageID);
+      const myData = users.find(user => user.id === event.senderID);
+      if (!myData || !myData.gender) {
+        return api.sendMessage("⚠️ Could not determine your gender.", event.threadID, event.messageID);
       }
 
-      const userGender = currentUser.gender.toUpperCase();
+      const myGender = myData.gender.toUpperCase();
       let matchCandidates = [];
 
-      // ২. অপোজিট জেন্ডার ফিল্টারিং লজিক (ইউজার নিজে বাদ যাবে)
-      if (userGender === "MALE") {
-        matchCandidates = userInfo.filter(u => u.gender === "FEMALE" && u.id !== senderID);
-      } else if (userGender === "FEMALE") {
-        matchCandidates = userInfo.filter(u => u.gender === "MALE" && u.id !== senderID);
+      if (myGender === "MALE") {
+        matchCandidates = users.filter(user => user.gender === "FEMALE" && user.id !== event.senderID);
+      } else if (myGender === "FEMALE") {
+        matchCandidates = users.filter(user => user.gender === "MALE" && user.id !== event.senderID);
       } else {
-        matchCandidates = userInfo.filter(u => u.id !== senderID);
+        return api.sendMessage("⚠️ Your gender is undefined. Cannot find a match.", event.threadID, event.messageID);
       }
 
       if (matchCandidates.length === 0) {
-        api.setMessageReaction("🥺", messageID, (err) => {}, true);
-        return api.sendMessage("⚠️ এই গ্রুপে আপনার বিপরীত জেন্ডারের কোনো মেম্বার পাওয়া যায়নি!", threadID, messageID);
+        return api.sendMessage("❌ No suitable match found in the group.", event.threadID, event.messageID);
       }
 
-      // রেনডম পার্টনার সিলেক্ট
-      const randomPartner = matchCandidates[Math.floor(Math.random() * matchCandidates.length)];
+      const selectedMatch = matchCandidates[Math.floor(Math.random() * matchCandidates.length)];
+      let matchName = selectedMatch.name;
 
-      // জেন্ডার অনুযায়ী ছবিতে পজিশন ঠিক করা (বাম পাশে ছেলে, ডান পাশে মেয়ে)
-      const boyID = userGender === "MALE" ? senderID : randomPartner.id;
-      const girlID = userGender === "FEMALE" ? senderID : randomPartner.id;
-      
-      const boyName = userGender === "MALE" ? currentUser.name : randomPartner.name;
-      const girlName = userGender === "FEMALE" ? currentUser.name : randomPartner.name;
+      let fontMap;
+      try {
+        const { data } = await axios.get(`${baseUrl}/21.json`);
+        fontMap = data;
+      } catch (e) {
+        fontMap = {};
+      }
 
-      // ৩. হাই-কোয়ালিটি ইমেজ ডাউনলোড (720x720) এবং টোকেন মেথড
-      const bgResponse = await axios.get("https://i.ibb.co/JFnQkzvk/1000012646.jpg", { responseType: "arraybuffer" });
-      const background = await loadImage(Buffer.from(bgResponse.data));
+      const convertFont = (text) =>
+        text.split("").map(ch => fontMap[ch] || ch).join("");
 
-      const tokenStr = "access_token=6628568379%7Cc1e620fa708a1d5696fb991c1bde5662";
-      const avatarBoyUrl = `https://graph.facebook.com/${boyID}/picture?width=720&height=720&${tokenStr}`;
-      const avatarGirlUrl = `https://graph.facebook.com/${girlID}/picture?width=720&height=720&${tokenStr}`;
+      senderName = convertFont(senderName);
+      matchName = convertFont(matchName);
 
-      const boyResponse = await axios.get(avatarBoyUrl, { responseType: "arraybuffer" }).catch(() => axios.get("https://i.ibb.co/dmw630v/avatar.png", { responseType: "arraybuffer" }));
-      const girlResponse = await axios.get(avatarGirlUrl, { responseType: "arraybuffer" }).catch(() => axios.get("https://i.ibb.co/dmw630v/avatar.png", { responseType: "arraybuffer" }));
-
-      const boyImg = await loadImage(Buffer.from(boyResponse.data));
-      const girlImg = await loadImage(Buffer.from(girlResponse.data));
-
-      // ৪. হাই-ডেফিনিশন ক্যানভাস কোয়ালিটি প্রোটেকশন
-      const canvas = createCanvas(background.width, background.height);
+      const width = 800;
+      const height = 400;
+      const canvas = createCanvas(width, height);
       const ctx = canvas.getContext("2d");
-      
-      // ইমেজ স্মুথিং এনাবল করা (কোয়ালিটি ফিক্স)
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = "high";
-      
-      ctx.drawImage(background, 0, 0, background.width, background.height);
 
-      // ছেলের ছবি নিখুঁত পজিশন (Size: 22%)
-      const bSize = Math.floor(background.width * 0.22);
-      const bx = Math.floor(background.width * 0.23);
-      const by = Math.floor(background.height * 0.16);
+      const background = await loadImage("https://i.imgur.com/J8gy1tA.jpeg");
+      ctx.drawImage(background, 0, 0, width, height);
 
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(bx + bSize / 2, by + bSize / 2, bSize / 2, 0, Math.PI * 2);
-      ctx.closePath();
-      ctx.clip();
-      ctx.drawImage(boyImg, bx, by, bSize, bSize);
-      ctx.restore();
+      const sIdImage = await loadImage(`https://graph.facebook.com/${event.senderID}/picture?width=720&height=720&access_token=6628568379%7Cc1e620fa708a1d5696fb991c1bde5662`, {
+        headers: { "User-Agent": "Mozilla/5.0" }
+      });
+      const pairPersonImage = await loadImage(`https://graph.facebook.com/${selectedMatch.id}/picture?width=720&height=720&access_token=6628568379%7Cc1e620fa708a1d5696fb991c1bde5662`, {
+        headers: { "User-Agent": "Mozilla/5.0" }
+      });
 
-      // মেয়ের ছবি নিখুঁত পজিশন (Size: 22%)
-      const gSize = Math.floor(background.width * 0.22);
-      const gx = Math.floor(background.width * 0.44);
-      const gy = Math.floor(background.height * 0.26);
+      function drawBox(ctx, img, x, y, size) {
+        ctx.save();
+        ctx.strokeStyle = "#ff80ab";
+        ctx.lineWidth = 4;
+        ctx.fillStyle = "rgba(0, 0, 0, 0.4)";
+        ctx.fillRect(x, y, size, size);
+        ctx.strokeRect(x, y, size, size);
+        ctx.drawImage(img, x, y, size, size);
+        ctx.restore();
+      }
 
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(gx + gSize / 2, gy + gSize / 2, gSize / 2, 0, Math.PI * 2);
-      ctx.closePath();
-      ctx.clip();
-      ctx.drawImage(girlImg, gx, gy, gSize, gSize);
-      ctx.restore();
+      drawBox(ctx, sIdImage, width - 210, 40, 150);
+      drawBox(ctx, pairPersonImage, width - 210, 210, 150);
 
-      const cacheDir = path.join(__dirname, "cache");
-      if (!fs.existsSync(cacheDir)) fs.mkdirSync(cacheDir, { recursive: true });
-
-      const outputPath = path.join(cacheDir, `pair_${senderID}_${Date.now()}.png`);
+      const outputPath = path.join(__dirname, "pair2_output.png");
       const out = fs.createWriteStream(outputPath);
       const stream = canvas.createPNGStream();
       stream.pipe(out);
 
-      out.on("finish", async () => {
-        // ১০কে ব্যালেন্স মাইনাস
-        await usersData.set(senderID, { money: currentBalance - cost });
+      out.on("finish", () => {
+        const lovePercent = Math.floor(Math.random() * 31) + 70;
 
-        // ৫. স্টাইলিশ গড-লেভেল অরা ক্যাপশন স্টাইল
-        const lovePercentage = Math.floor(Math.random() * 41) + 60; // ৬০% থেকে ১০০% এর মধ্যে লাভ রেট
-        
-        const caption = `╭──────📦 𝐏𝐄𝐑𝐅𝐄𝐂𝐓 𝐌𝐀𝐓𝐂𝐇 📦──────╮\n\n` +
-                        `  🤵 𝐁𝐨𝐲: ${boyName}\n` +
-                        `  👰 𝐆𝐢𝐫𝐥: ${girlName}\n\n` +
-                        `  💞 𝐋𝐨𝐯𝐞 𝐏𝐞𝐫𝐜𝐞𝐧𝐭𝐚𝐠𝐞: 【 ${lovePercentage}% 】\n\n` +
-                        `╰────────────────────────╯\n` +
-                        `"নিয়তি আজ তোমাদের দুজনকে একসাথে মিলিয়ে দিলো। তোমরা যেন সারাজীবন এভাবেই একে অপরের পাশে থাকতে পারো! 💖"`;
+        const message = `💞 𝗠𝗮𝘁𝗰𝗵𝗺𝗮𝗸𝗶𝗻𝗴 𝗖𝗼𝗺𝗽𝗹𝗲𝘁𝗲 💞
+
+🎀  ${senderName} ✨️
+🎀  ${matchName} ✨️
+
+🕊️ 𝓓𝓮𝓼𝓽𝓲𝓷𝔂 𝓱𝓪𝓼 𝔀𝓻𝓲𝓽𝓽𝓮𝓷 𝔂𝓸𝓾𝓻 𝓷𝓪𝓶𝓮𝓼 𝓽𝓸𝓰𝓮𝓽𝓱𝓮𝓻  🌹 𝓜𝓪𝔂 𝔂𝓸𝓾𝓻 𝓫𝓸𝓷𝓭 𝓵𝓪𝓼𝓽 𝓯𝓸𝓻𝓮𝓿𝓮𝓻  ✨️  
+
+💘 𝙲𝚘𝚖𝚙𝚊𝚝𝚒𝚋𝚒𝚕𝚒𝚝𝚢: ${lovePercent}% 💘`;
 
         api.sendMessage(
           {
-            body: caption,
-            mentions: [
-              { tag: currentUser.name, id: senderID },
-              { tag: randomPartner.name, id: randomPartner.id }
-            ],
-            attachment: fs.createReadStream(outputPath)
+            body: message,
+            attachment: fs.createReadStream(outputPath),
           },
-          threadID,
-          () => {
-            api.setMessageReaction("✅", messageID, (err) => {}, true);
-            if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
-          },
-          messageID
+          event.threadID,
+          () => fs.unlinkSync(outputPath),
+          event.messageID
         );
       });
 
     } catch (error) {
-      console.error(error);
-      api.setMessageReaction("❌", messageID, (err) => {}, true);
-      return api.sendMessage("❌ সার্ভার এরর! দয়া করে আবার চেষ্টা করুন।", threadID, messageID);
+      api.sendMessage(
+        "❌ An error occurred while trying to find a match.\n" + error.message,
+        event.threadID,
+        event.messageID
+      );
     }
-  }
+  },
 };
+    
