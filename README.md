@@ -1,61 +1,58 @@
-# 🌸 Aliya Bot v2
+<div align="center">
 
-Messenger bot, ekbar setup korle nijei chole. Moderation, economy, games, music/video, AI chat (Claude/Gemini).
+# 🌸 𝗔𝗹𝗶𝘆𝗮 𝗢𝗳𝗳𝗶𝗰𝗶𝗮𝗹 𝘃𝟰 🦢
 
-## Quick start (jekono jaygay)
+<p align="center">
+  <img src="https://readme-typing-svg.demolab.com?font=Fira+Code&weight=700&size=24&pause=1000&color=00F0FF&center=true&vCenter=true&width=550&lines=Maintained+by+Mr.king;GoatBot+v4+Architecture;Powerful+%26+Smart+Messenger+Bot" alt="Typing SVG" />
+</p>
 
-1. `ADMIN_IDS` = tomar Facebook UID, `APPSTATE` = cookies JSON (**alada/test account** er).
-2. `npm start` (prothom bar dependencies nijei install hoy).
-3. `npm run doctor` chalale bole dibe ki baki ache.
+---
 
-| Platform | Ki korbe |
-|---|---|
-| **Render** | New Web Service, repo connect (render.yaml ache). Env vars dao. Free plan e UptimeRobot diye `/health` ping koro |
-| **Railway** | Repo deploy, Variables e env dao (railway.json ache, auto restart ON) |
-| **Replit** | Import, Secrets e env dao, Run. Free plan sleep kore, UptimeRobot ping koro |
-| **VS Code / PC** | `.env.example` ke `.env` banao, fill koro, `npm start` |
-| **Termux** | `bash scripts/termux.sh` (nodejs + pm2 + wake-lock setup kore) |
-| **Linux VPS** | `npm run pm2` + `pm2 save && pm2 startup`, ba `deploy/aliya-bot.service` (systemd) |
-| **Docker** | `docker build -t aliya . && docker run --env-file .env -p 3000:3000 aliya` |
-| **Vercel** | ❌ Cholbe na. Vercel serverless, bot er 24/7 connection rakhte pare na |
+### 📊 𝗚𝗶𝘁𝗛𝘂𝗯 𝟮 𝗗𝗲𝘃𝗲𝗹𝗼𝗽𝗲𝗿 𝗦𝘁𝗮𝘁𝘀 🦋
 
-Node 18+ (20, 22, 26 sob) cholbe. `engines` e upper limit nai.
+<p align="center">
+  <img height="165" src="https://github-readme-stats.vercel.app/api?username=mrking-svg&theme=tokyonight&show_icons=true&hide_border=true&count_private=true" />
+  <img height="165" src="https://github-readme-stats.vercel.app/api/top-langs/?username=mrking-svg&theme=tokyonight&layout=compact&hide_border=true" />
+</p>
 
-## Bot jno off na hoy (auto kaj gula)
+---
 
-- **Supervisor** (`index.js`) bot ke crash/freeze hole nijei restart kore (backoff 2s→60s).
-- Port prothome-i khole, tai hosting health check pass kore, bot login howar age-i.
-- **Freeze watchdog**: 2 min heartbeat na paile kill kore restart.
-- **Memory guard**: RAM limit auto-detect kore, beshi hole planned restart.
-- **12 ghonta por por restart** (fresh MQTT session), config.json `autoRestartHours`.
-- **Cookie auto-refresh**: 30 min por por session save kore, tai cookies beshi din bnche.
-- **Self-ping**: Render/Railway/Replit e nijer URL ping kore (sleep komay).
-- **Auto backup** 6 ghonta por por (`backup`, `backup restore` command).
-- Cookies expire hole crash-loop kore na, 10 min por por retry kore ar alert pathay (Discord/Telegram set thakle).
+### 🖼️ 𝗗𝗮𝘀𝗵𝗯𝗼𝗮𝗿𝗱 𝗣𝗿𝗲𝘃𝗶𝗲𝘄 𝗚𝗮𝗹𝗹𝗲𝗿𝘆 🌷
 
-## Onek group handle korar jonno
+<p align="center">
+  <img src="dashboard/images/Snapchat-1655741964.jpg" width="260" />
+  <img src="dashboard/images/images%20(3).jpeg" width="260" />
+  <img src="dashboard/images/images%20(5).jpeg" width="260" />
+</p>
 
-- Prottek group er message **serial**, alada group **parallel** (default 25 ekshathe).
-- **Send throttle**: sekhane 5 msg/sec max, group-wise gap, ekbar retry. Facebook "too fast" block theke bachay.
-- Duplicate event drop, flood hole puran queued event drop.
-- Group admin lookup lazy + cached (shudhu lagle API call).
-- Sob cache size-capped, memory leak nai.
+---
 
-## Commands (prefix `/`)
+### 💻 𝗧𝗲𝗰𝗵 𝗦𝘁𝗮𝗰𝗸 𝟮 𝗧𝗼𝗼𝗹𝘀 🐇
 
-- **Group:** `antispam`, `welcome`, `antiout`, `npx` (prefix chara), `gname`, `kick`, `warn`
-- **Admin:** `approve`, `ban`, `unban`, `vip`, `backup`, `restart` (role 4)
-- **Economy:** `balance`, `daily`, `work`, `send`, `top`
-- **Games:** `slots`, `flip`, `rps`, `guess`
-- **Media:** `music`, `video` · **AI:** `ai` · **System:** `help`, `ping`
+<p align="center">
+  <img src="https://skillicons.dev/icons?i=js,nodejs,express,sqlite,git,github,replit,vscode,linux&perline=5" />
+</p>
 
-Roles: 0 sobai, 1 group admin, 2 VIP, 3 bot admin, 4 developer. Notun command: `commands/` e `.js` file dao
-(`config` + `run`; optional `onChat`, `onReply`, `onReaction`).
+---
 
-## Dhoro (limits)
+### 📬 𝗖𝗼𝗻𝗻𝗲𝗰𝘁 𝘄𝗶𝘁𝗵 𝗗𝗲𝘃𝗲𝗹𝗼𝗽𝗲𝗿 𝟮 𝗦𝘂𝗽𝗽𝗼𝗿𝘁 🌸
 
-- 100% off na hoy, eta kono bot dite pare na. Cookies expire, Facebook checkpoint/ban, ba free host er limit hole bondho hobe, tobe bot nijei recover kore ar alert dey.
-- Render free e disk reset hoy: data rakhte `DATA_DIR` e persistent disk dao.
-- Unofficial Facebook login Facebook er rules er against, ban er jhuki ache. Main account use koro na.
-- Music/video unofficial YouTube library, mawkhe mawkhe vangte pare.
-- Login library `@dongdev/fca-unofficial` (fallback: `ws3-fca`). Eta vange gele `config.json` e `fcaPackage` bodlao.
+<p align="center">
+  <a href="https://www.facebook.com/masterjiraya001" target="_blank">
+    <img src="https://img.shields.io/badge/Facebook-1877F2?style=for-the-badge&logo=facebook&logoColor=white" />
+  </a>
+  <a href="https://m.me/j/NmI8lyXRwjQpyHbg/?send_source=gc%3Acopy_invite_link_t" target="_blank">
+    <img src="https://img.shields.io/badge/Support_GC-0084FF?style=for-the-badge&logo=messenger&logoColor=white" />
+  </a>
+  <a href="mailto:masterjiraya890@gmail.com">
+    <img src="https://img.shields.io/badge/Email_Me-D14836?style=for-the-badge&logo=gmail&logoColor=white" />
+  </a>
+</p>
+
+---
+
+<p align="center">
+  <img src="https://komarev.com/ghpvc/?username=mrking-svg&style=flat-square&color=00f0ff&label=Profile+Views" alt="Profile Views" />
+</p>
+
+</div>
