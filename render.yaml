@@ -1,14 +1,17 @@
 services:
   - type: web
-    name: aliya-official-v4
+    name: aliya-bot
     runtime: node
     plan: free
-    buildCommand: npm install --omit=dev --no-audit --no-fund
+    buildCommand: npm install --omit=dev
     startCommand: npm start
     healthCheckPath: /health
-    autoDeploy: true
     envVars:
-      - key: NODE_VERSION
-        value: "22"          # use "26" if Render lists it
-      - key: ACCOUNT_TXT_B64 # base64 of account.txt (set it in the dashboard)
+      - key: APPSTATE
+        sync: false
+      - key: ADMIN_IDS
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
         sync: false

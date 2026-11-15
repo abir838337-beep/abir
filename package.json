@@ -1,86 +1,21 @@
 {
-  "name": "aliya-official-v4",
-  "version": "4.0.2",
-  "description": "Aliya Official V4 Messenger bot, maintained by Mr.king.",
+  "name": "aliya-bot",
+  "version": "2.0.0",
+  "description": "Messenger bot that runs everywhere: moderation, economy, games, media and AI chat",
   "main": "index.js",
-  "engines": {
-    "node": ">=20.0.0",
-    "npm": ">=9.0.0"
-  },
-  "dependencies": {
-    "@distube/ytdl-core": "^4.13.3",
-    "@img/sharp-wasm32": "^0.35.4",
-    "axios": "^1.4.0",
-    "bcrypt": "npm:bcryptjs@2.4.3",
-    "bluebird": "^3.7.2",
-    "body-parser": "^1.20.2",
-    "chalk": "^4.1.2",
-    "cheerio": "^1.0.0-rc.12",
-    "connect-flash": "^0.1.1",
-    "cookie-parser": "^1.4.6",
-    "eta": "^1.12.3",
-    "express": "^4.18.1",
-    "express-fileupload": "^1.4.0",
-    "express-rate-limit": "^6.5.2",
-    "express-session": "^1.17.3",
-    "fca-saim-x69x": "^0.0.1",
-    "form-data": "^4.0.0",
-    "fs-extra": "^11.1.0",
-    "gifencoder": "^2.0.1",
-    "google-tts-api": "^2.0.2",
-    "googleapis": "^100.0.0",
-    "got": "^14.4.5",
-    "gradient-string": "^2.0.2",
-    "graphql-query-to-json": "^2.0.1",
-    "jsonlint-mod": "^1.7.6",
-    "leven": "^3.1.0",
-    "lodash": "^4.17.21",
-    "mime-db": "^1.52.0",
-    "moment-timezone": "^0.5.34",
-    "mongoose": "^6.3.1",
-    "mqtt": "^4.3.7",
-    "node-cron": "^3.0.2",
-    "nodemailer": "^6.7.5",
-    "npmlog": "^7.0.1",
-    "ora": "^5.4.1",
-    "passport": "^0.6.0",
-    "passport-local": "^1.0.0",
-    "qrcode-reader": "^1.0.4",
-    "qs": "^6.11.0",
-    "request": "^2.88.2",
-    "searchitunes": "^2.5.4",
-    "sequelize": "^6.19.0",
-    "sharp": "^0.35.4",
-    "socket.io": "^4.5.1",
-    "sqlite3": "^5.1.7",
-    "tinyurl": "^1.1.7",
-    "totp-generator": "^0.0.13",
-    "websocket-stream": "^5.5.2",
-    "ws3-fca": "^3.5.2"
-  },
   "scripts": {
     "start": "node index.js",
     "dev": "node index.js",
-    "prod": "node index.js",
-    "pm2": "npx --yes -p pm2 pm2-runtime start ecosystem.config.js"
+    "doctor": "node scripts/doctor.js",
+    "pm2": "pm2 start ecosystem.config.js"
   },
-  "author": "Mr.king",
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/masterjiraya890-svg/Aliya-Official--v4.git"
+  "engines": { "node": ">=18", "npm": ">=9" },
+  "dependencies": {
+    "@dongdev/fca-unofficial": "latest",
+    "@distube/ytdl-core": "latest",
+    "yt-search": "^2.12.1"
   },
-  "keywords": [],
-  "bugs": {
-    "url": "https://github.com/masterjiraya890-svg/Aliya-Official--v4/issues"
-  },
-  "homepage": "https://github.com/masterjiraya890-svg/Aliya-Official--v4#readme",
-  "allowScripts": {
-    "sqlite3": true,
-    "es5-ext": true,
-    "sharp": true
-  },
-  "overrides": {
-    "canvas": "npm:@napi-rs/canvas@^0.1.0"
+  "optionalDependencies": {
+    "ws3-fca": "latest"
   }
 }
