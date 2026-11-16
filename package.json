@@ -4,7 +4,7 @@
   "description": "Aliya Official V4 Messenger bot, maintained by Mr.king.",
   "main": "index.js",
   "engines": {
-    "node": ">=20.0.0",
+    "node": "20.x",
     "npm": ">=9.0.0"
   },
   "dependencies": {
@@ -87,5 +87,8 @@
     "sqlite3": true,
     "es5-ext": true,
     "sharp": true
+  },
+  "overrides": {
+    "canvas": "$@napi-rs/canvas"
   }
 }
