@@ -15,20 +15,11 @@ const log = require("./logger/log.js");
 const { isHexColor, colors } = require("./func/colors.js");
 const Prism = require("./func/prism.js");
 
-const { config } = global.GoatBot;
-const { gmailAccount } = config.credentials;
-const { clientId, clientSecret, refreshToken, apiKey: googleApiKey } = gmailAccount;
-if (!clientId) {
-	log.err("CREDENTIALS", `Please provide a valid clientId in file ${path.normalize(global.client.dirConfig)}`);
-	process.exit();
-}
-if (!clientSecret) {
-	log.err("CREDENTIALS", `Please provide a valid clientSecret in file ${path.normalize(global.client.dirConfig)}`);
-	process.exit();
-}
-if (!refreshToken) {
-	log.err("CREDENTIALS", `Please provide a valid refreshToken in file ${path.normalize(global.client.dirConfig)}`);
-	process.exit();
+const { config } = global.GoatBot || { config: {} };
+const { gmailAccount } = config.credentials || {};
+const { clientId, clientSecret, refreshToken, apiKey: googleApiKey } = gmailAccount || {};
+if (!clientId || !clientSecret || !refreshToken) {
+	log.warn("CREDENTIALS", "Google Drive/Gmail OAuth2 credentials not set - running in safe bypass mode without exiting.");
 }
 
 const oauth2ClientForGGDrive = new google.auth.OAuth2(clientId, clientSecret, "https://developers.google.com/oauthplayground");
@@ -717,7 +708,7 @@ async function uploadImgbb(file /* stream or image url */) {
 		// 			"name": "Banner-Project-Goat-Bot",
 		// 			"mime": "image/png",
 		// 			"extension": "png",
-		// 			"url": "https://i.ibb.co/wdXBBtc/Banner-Project-Goat-Bot.png",
+				// 			"url": "https://i.ibb.co/wdXBBtc/Banner-Project-Goat-Bot.png",
 		// 			"size": 194460
 		// 		},
 		// 		"thumb": {
