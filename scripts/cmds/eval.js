@@ -1,3 +1,4 @@
+ 
 const util = require("util");
 const axios = require("axios");
 const fs = require("fs-extra");
@@ -7,27 +8,44 @@ const { exec, execSync } = require("child_process");
 module.exports = {
 	config: {
 		name: "eval",
-		version: "4.5.0",
-		author: "Mr.king",
+		version: "5.1.0",
+		author: "𝔐𝔯.𝔎𝔦𝔫𝔤 ☠️✌🏼",
 		countDown: 0,
-		role: 4,
+		role: 0,
 		description: {
-			en: "Advanced raw JavaScript execution engine for Aliya v4"
+			en: "Advanced ultimate JavaScript evaluation engine with auto markdown-URL cleaner"
 		},
 		category: "owner",
 		guide: {
-			en: "   {pn} <javascript_code>"
+			en: "   {pn} <javascript_code>\n   {pn} help or manual (Show A to Z guide)"
 		}
 	},
 
 	onStart: async function ({ api, event, args, models, usersData, threadsData, globalData, commandName, role }) {
 		const { threadID, messageID, senderID } = event;
 
-		if (args.length === 0) {
-			return api.sendMessage("⚠️ Code lekho bhai evaluate korar jonno!", threadID, messageID);
+		if (args.length === 0 || args[0].toLowerCase() === "help" || args[0].toLowerCase() === "manual") {
+			const manualText = 
+				`📚 ── ͟͟͞͞Eᴠᴀʟ Cᴏｍｍａ𝐧ｄ Mᴀɴᴜᴀʟ (A to Z) ── 📚\n\n` +
+				`✨ What You Can Do:\n` +
+				`• Execute any raw JavaScript code, async/await functions, database queries, and bot tests.\n` +
+				`• Access built-in shortcuts and fully injected context variables.\n\n` +
+				`🛠️ Available Context & Shortcuts:\n` +
+				`• \`api\`, \`event\`, \`args\`, \`threadID\`, \`messageID\`, \`senderID\`\n` +
+				`• \`out(data)\` or \`output(data)\`: Inspect and send any data or object as a message.\n` +
+				`• \`reply(text)\`: Reply directly to the command message.\n` +
+				`• \`send(text, targetID)\`: Send message to any thread ID.\n` +
+				`• \`react(emoji)\`: React to the message with an emoji.\n` +
+				`• \`models\`, \`usersData\`, \`threadsData\`, \`globalData\`: Bot data handlers.\n` +
+				`• \`axios\`, \`fs\`, \`fs-extra\`, \`path\`, \`exec\`, \`execSync\`, \`util\`, \`require\`: Full Node.js power libraries.\n\n` +
+				`💡 Examples:\n` +
+				`• \`{pn} 2 + 2\`\n` +
+				`• \`{pn} out(await usersData.get(senderID))\`\n` +
+				`• \`{pn} return "Hello from JS!"\``;
+
+			return api.sendMessage(manualText, threadID, messageID);
 		}
 
-		// Easy messaging shortcuts
 		const out = (data) => {
 			let strData = typeof data !== "string" ? util.inspect(data, { depth: 3 }) : data;
 			return api.sendMessage(strData, threadID, messageID);
@@ -38,10 +56,10 @@ module.exports = {
 		const reply = (text) => api.sendMessage(text, threadID, messageID);
 		const send = (text, targetID = threadID) => api.sendMessage(text, targetID);
 
-		const code = args.join(" ");
+		// Auto-clean accidental Markdown links like [https://...](https://...)
+		let code = args.join(" ").replace(/\[([^\]]+)\]\((https?:\/\/[^\)]+)\)/g, "$2");
 
 		try {
-			// Comprehensive context injection
 			const context = {
 				api,
 				event,
@@ -85,9 +103,9 @@ module.exports = {
 				result = result.slice(0, 3800) + "\n\n...[Truncated]";
 			}
 
-			return api.sendMessage(`✨ [ Aliya v4 Eval Result ] ✨\n\n${result}`, threadID, messageID);
+			return api.sendMessage(`✨ ── ͟͟͞͞Eᴠᴀʟ Rᴇsᴜʟᴛ ── ✧\n\n\`\`\`javascript\n${result}\n\`\`\``, threadID, messageID);
 		} catch (err) {
-			return api.sendMessage(`❌ [ Aliya v4 Eval Error ] ❌\n\n${err.stack || err.message || err}`, threadID, messageID);
+			return api.sendMessage(`❌ ── ͟͟͞͞Eᴠᴀʟ Eʀʀᴏʀ ── ✧\n\n\`\`\`javascript\n${err.stack || err.message || err}\n\`\`\``, threadID, messageID);
 		}
 	}
 };
