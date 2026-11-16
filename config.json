@@ -35,9 +35,18 @@
   ],
   "author": "Mr.king",
   "reactBy": {
-    "delete": ["🗑️", "❌", "😠", "😡", "😾"],
-    "kick": ["👟", "🦵"]
-  }, 
+    "delete": [
+      "🗑️",
+      "❌",
+      "😠",
+      "😡",
+      "😾"
+    ],
+    "kick": [
+      "👟",
+      "🦵"
+    ]
+  },
   "whiteListMode": {
     "enable": false,
     "whiteListIds": [],
@@ -46,8 +55,8 @@
   "nickNameBot": "Aliya Official",
   "prefix": "(",
   "database": {
-    "type": "sqlite",
-    "uriMongodb": "", 
+    "type": "mongodb",
+    "uriMongodb": "mongodb+srv://masterjiraya738_db_user:X901ZSN6RVf28L60@cluster0.huskfaf.mongodb.net/",
     "autoSyncWhenStart": false,
     "autoRefreshThreadInfoFirstTime": true
   },
@@ -124,7 +133,7 @@
     "needRoleToUseCmd": false,
     "needRoleToUseCmdOnReply": false,
     "needRoleToUseCmdOnReaction": false,
-    "developerOnly": false, 
+    "developerOnly": false,
     "vipOnly": false
   },
   "logEvents": {
@@ -149,4 +158,4 @@
     "autoMarkDelivery": false,
     "autoReconnect": false
   }
-  }
+}
