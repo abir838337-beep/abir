@@ -1,100 +1,127 @@
-const { getStreamsFromAttachment } = global.utils;
-
+ 
 module.exports = {
 	config: {
 		name: "notification",
-		aliases: ["notify", "noti"],
-		version: "1.7",
-		author: "NTKhang",
+		aliases: ["notice", "noti", "announce"],
+		version: "1.0.0",
+		author: "Mr.king",
 		countDown: 5,
-		role: 3,
-		description: {
-			vi: "Gửi thông báo từ admin đến all box",
-			en: "Send notification from admin to all box"
+		role: 2,
+		shortDescription: {
+			en: "Send a global notice to all groups with full member mentions"
 		},
 		category: "owner",
 		guide: {
-			en: "{pn} <tin nhắn>"
-		},
-		envConfig: {
-			delayPerGroup: 250
+			en: "   {pn} <notice message>"
 		}
 	},
 
-	langs: {
-		vi: {
-			missingMessage: "Vui lòng nhập tin nhắn bạn muốn gửi đến tất cả các nhóm",
-			notification: "Thông báo từ admin bot đến tất cả nhóm chat (không phản hồi tin nhắn này)",
-			sendingNotification: "Bắt đầu gửi thông báo từ admin bot đến %1 nhóm chat",
-			sentNotification: "✅ Đã gửi thông báo đến %1 nhóm thành công",
-			errorSendingNotification: "Có lỗi xảy ra khi gửi đến %1 nhóm:\n%2"
-		},
-		en: {
-			missingMessage: "Please enter the message you want to send to all groups",
-			notification: "Notification from admin bot to all chat groups (do not reply to this message)",
-			sendingNotification: "Start sending notification from admin bot to %1 chat groups",
-			sentNotification: "✅ Sent notification to %1 groups successfully",
-			errorSendingNotification: "An error occurred while sending to %1 groups:\n%2"
+	onStart: async function ({ api, event, args, threadsData, usersData, message }) {
+		const { senderID, messageID } = event;
+		const noticeMsg = args.join(" ").trim();
+
+		if (!noticeMsg) {
+			return message.reply("⚠️ Please provide a notice message!\n\n💡 Example: `{pn} Bot will be updated tonight at 10 PM.`");
 		}
-	},
 
-	onStart: async function ({ message, api, event, args, commandName, envCommands, threadsData, getLang }) {
-		const { delayPerGroup } = envCommands[commandName];
-		if (!args[0])
-			return message.reply(getLang("missingMessage"));
-		const formSend = {
-			body: `${getLang("notification")}\n────────────────\n${args.join(" ")}`,
-			attachment: await getStreamsFromAttachment(
-				[
-					...event.attachments,
-					...(event.messageReply?.attachments || [])
-				].filter(item => ["photo", "png", "animated_image", "video", "audio"].includes(item.type))
-			)
-		};
+		api.setMessageReaction("📢", messageID, () => {}, true);
 
-		const allThreadID = (await threadsData.getAll()).filter(t => t.isGroup && t.members.find(m => m.userID == api.getCurrentUserID())?.inGroup);
-		message.reply(getLang("sendingNotification", allThreadID.length));
-
-		let sendSucces = 0;
-		const sendError = [];
-		const wattingSend = [];
-
-		for (const thread of allThreadID) {
-			const tid = thread.threadID;
+		try {
+			let ownerName = "Mr.king";
 			try {
-				wattingSend.push({
-					threadID: tid,
-					pending: api.sendMessage(formSend, tid)
-				});
-				await new Promise(resolve => setTimeout(resolve, delayPerGroup));
+				ownerName = await usersData.getName(senderID);
+			} catch (e) {
+				const userInfo = await api.getUserInfo(senderID);
+				if (userInfo && userInfo[senderID]) {
+					ownerName = userInfo[senderID].name;
+				}
 			}
-			catch (e) {
-				sendError.push(tid);
-			}
-		}
 
-		for (const sended of wattingSend) {
-			try {
-				await sended.pending;
-				sendSucces++;
-			}
-			catch (e) {
-				const { errorDescription } = e;
-				if (!sendError.some(item => item.errorDescription == errorDescription))
-					sendError.push({
-						threadIDs: [sended.threadID],
-						errorDescription
-					});
-				else
-					sendError.find(item => item.errorDescription == errorDescription).threadIDs.push(sended.threadID);
-			}
-		}
+			const allThreads = await threadsData.getAll();
+			const groupThreads = allThreads.filter(t => t.isGroup === true);
 
-		let msg = "";
-		if (sendSucces > 0)
-			msg += getLang("sentNotification", sendSucces) + "\n";
-		if (sendError.length > 0)
-			msg += getLang("errorSendingNotification", sendError.reduce((a, b) => a + b.threadIDs.length, 0), sendError.reduce((a, b) => a + `\n - ${b.errorDescription}\n  + ${b.threadIDs.join("\n  + ")}`, ""));
-		message.reply(msg);
+			if (groupThreads.length === 0) {
+				return message.reply("❌ The bot is currently not in any groups.");
+			}
+
+			let successCount = 0;
+			let failCount = 0;
+
+			const baseHeader = "Allllllllllllllllllllllllllllllllll 🐇🌸";
+			const footerText = 
+`\nnotice : "${noticeMsg}"
+
+- From: "${ownerName}"
+
+╭───────────────⬣
+│ 𝐌𝐚𝐝𝐞 𝐰𝐢𝐭𝐡 🤍 𝐛𝐲 --𝔐𝔯.𝔎𝔦𝔫𝔤
+╰───────────────⬣`;
+
+			for (const thread of groupThreads) {
+				try {
+					const tid = thread.threadID;
+					let participantIDs = [];
+
+					if (thread.members && thread.members.length > 0) {
+						participantIDs = thread.members.filter(m => m.inGroup !== false).map(m => m.userID);
+					} else {
+						const info = await api.getThreadInfo(tid);
+						participantIDs = info.participantIDs || [];
+					}
+
+					const botID = api.getCurrentUserID();
+					participantIDs = participantIDs.filter(id => id !== botID);
+
+					const mentions = [];
+					let tagLine = baseHeader;
+					let bodyLength = tagLine.length;
+
+					for (let i = 0; i < participantIDs.length; i++) {
+						const uid = participantIDs[i];
+						let fromIndex = 0;
+
+						if (bodyLength <= i) {
+							tagLine += " ";
+							bodyLength++;
+						}
+
+						if (tagLine.slice(0, i).lastIndexOf(tagLine[i]) !== -1) {
+							fromIndex = i;
+						}
+
+						mentions.push({
+							tag: tagLine[i],
+							id: uid,
+							fromIndex
+						});
+					}
+
+					const fullBody = tagLine + footerText;
+
+					await api.sendMessage({
+						body: fullBody,
+						mentions
+					}, tid);
+
+					successCount++;
+
+					await new Promise(resolve => setTimeout(resolve, 1500));
+
+				} catch (err) {
+					failCount++;
+				}
+			}
+
+			api.setMessageReaction("✅", messageID, () => {}, true);
+			return message.reply(
+				`📢 ── ͟͟͞͞Nᴏᴛɪᴄᴇ Rᴇᴘᴏ𝐫𝐭 ── ✧\n\n` +
+				`✅ Successfully sent: ${successCount} groups\n` +
+				`❌ Failed: ${failCount} groups`
+			);
+
+		} catch (error) {
+			api.setMessageReaction("❌", messageID, () => {}, true);
+			return message.reply(`❌ Failed to send notice:\n${error.message}`);
+		}
 	}
 };
