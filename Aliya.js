@@ -1,69 +1,63 @@
 /**
- * @author Mr.king
- * ! Modified and Updated for Aliya Bot v4 Engine
+ * ============================================================================
+ * ALIYA OFFICIAL V4 - MASTER PRIMARY ENGINE
+ * Maintained by Mr.king | Full Multi-Account Pool & Self-Healing Architecture
+ * ============================================================================
  */
-
 "use strict";
 
-process.on('unhandledRejection', error => console.error("[UNHANDLED_REJECTION]", error));
-process.on('uncaughtException', error => console.error("[UNCAUGHT_EXCEPTION]", error));
+process.on('unhandledRejection', error => console.error("[ALIYA_UNHANDLED_REJECTION]", error?.message || error));
+process.on('uncaughtException', error => {
+	console.error("[ALIYA_UNCAUGHT_EXCEPTION]", error?.stack || error);
+	if (process.send) try { process.send({ type: "SWITCH_TO_WOLF" }); } catch (e) {}
+	process.exit(4); // Exit code 4 triggers immediate Wolf.js failover in index.js
+});
 
-// Many groups = many listeners/events at once. Raise limit so Node doesn't spam warnings.
-require("events").EventEmitter.defaultMaxListeners = 100;
-process.setMaxListeners(100);
+require("events").EventEmitter.defaultMaxListeners = 150;
+process.setMaxListeners(150);
 
 const fs = require("fs-extra");
-const google = require("googleapis").google;
-const nodemailer = require("nodemailer");
-const log = require('./logger/log.js');
 const path = require("path");
+const log = require('./logger/log.js');
 
 process.env.BLUEBIRD_W_FORGOTTEN_RETURN = 0;
 
-// Dynamic Path Loader
 function getConfigPath(baseName, ext = ".json") {
 	const devPath = path.join(__dirname, `${baseName}.dev${ext}`);
 	const normalPath = path.join(__dirname, `${baseName}${ext}`);
-	if (fs.existsSync(devPath)) {
-		console.log(`⚙️ Loaded ${baseName}.dev${ext}`);
-		return devPath;
-	} else if (fs.existsSync(normalPath)) {
-		console.log(`⚙️ Loaded ${baseName}${ext}`);
-		return normalPath;
-	} else {
-		throw new Error(`❌ Missing ${baseName}${ext} or ${baseName}.dev${ext}`);
-	}
+	if (fs.existsSync(devPath)) return devPath;
+	if (fs.existsSync(normalPath)) return normalPath;
+	throw new Error(`Missing ${baseName}${ext}`);
 }
 
-// Fast Built-in JSON Validator
 function validJSON(pathDir) {
 	if (!fs.existsSync(pathDir)) throw new Error(`File "${pathDir}" not found`);
 	try {
-		const content = fs.readFileSync(pathDir, "utf-8");
-		JSON.parse(content);
+		JSON.parse(fs.readFileSync(pathDir, "utf-8"));
 		return true;
 	} catch (err) {
 		throw new Error(`JSON Syntax Error in ${pathDir}: ${err.message}`);
 	}
 }
 
-// Fresh deploys (Render/Railway/Replit...) may not have account.txt yet: create an empty
-// one instead of crashing. Add your cookie there, or use email/password in config.json.
-try {
-	const accTxt = path.join(__dirname, "account.txt");
-	const accDevTxt = path.join(__dirname, "account.dev.txt");
-	if (!fs.existsSync(accTxt) && !fs.existsSync(accDevTxt)) fs.writeFileSync(accTxt, "");
-} catch (err) { /* read-only disk: getConfigPath below will report it */ }
+// Ensure all 5 account files exist in root so rotation never crashes on ENOENT
+const ACCOUNT_FILES = ["account.txt", "account2.txt", "account3.txt", "account4.txt", "account5.txt"];
+for (const accFile of ACCOUNT_FILES) {
+	try {
+		const p = path.join(__dirname, accFile);
+		if (!fs.existsSync(p)) fs.writeFileSync(p, "");
+	} catch (e) {}
+}
 
 const dirConfig = getConfigPath("config", ".json");
 const dirConfigCommands = getConfigPath("configCommands", ".json");
-const dirAccount = getConfigPath("account", ".txt");
+const dirAccount = path.join(__dirname, "account.txt");
 
 for (const pathDir of [dirConfig, dirConfigCommands]) {
 	try {
 		validJSON(pathDir);
 	} catch (err) {
-		log.error("CONFIG", `${err.message}\nPlease fix it and restart bot.`);
+		log.error("CONFIG", `${err.message}\nPlease fix JSON syntax and restart.`);
 		process.exit(1);
 	}
 }
@@ -74,7 +68,6 @@ if (config.whiteListMode?.whiteListIds && Array.isArray(config.whiteListMode.whi
 }
 const configCommands = require(dirConfigCommands);
 
-// Global Bot Storage Initialization
 global.GoatBot = {
 	startTime: Date.now() - process.uptime() * 1000,
 	commands: new Map(),
@@ -90,16 +83,18 @@ global.GoatBot = {
 	onAnyEvent: [],
 	config,
 	configCommands,
-	envCommands: {},
-	envEvents: {},
-	envGlobal: {},
-	reLoginBot: function () { },
+	envCommands: configCommands.envCommands || {},
+	envEvents: configCommands.envEvents || {},
+	envGlobal: configCommands.envGlobal || {},
+	reLoginBot: function () {},
 	Listening: null,
 	oldListening: [],
 	callbackListenTime: {},
 	storage5Message: [],
 	fcaApi: null,
-	botID: null
+	botID: null,
+	activeAccountFile: "account.txt",
+	accountPoolStatus: {}
 };
 
 global.db = {
@@ -130,7 +125,7 @@ global.client = {
 		creatingDashBoardData: [],
 		creatingGlobalData: []
 	},
-	commandBanned: configCommands.commandBanned
+	commandBanned: configCommands.commandBanned || []
 };
 
 const utils = require("./utils.js");
@@ -140,128 +135,83 @@ global.temp = {
 	createThreadData: [],
 	createUserData: [],
 	createThreadDataError: [],
-	filesOfGoogleDrive: {
-		arraybuffer: {},
-		stream: {},
-		fileNames: {}
-	},
-	contentScripts: {
-		cmds: {},
-		events: {}
-	}
+	filesOfGoogleDrive: { arraybuffer: {}, stream: {}, fileNames: {} },
+	contentScripts: { cmds: {}, events: {} }
 };
 
-// Hot Reloading Setup
-const watchAndReloadConfig = (dir, type, prop, logName) => {
-	let lastModified = fs.statSync(dir).mtimeMs;
-	fs.watch(dir, (eventType) => {
-		if (eventType === type) {
-			setTimeout(() => {
-				try {
-					const currentMtime = fs.statSync(dir).mtimeMs;
-					if (lastModified === currentMtime) return;
-					lastModified = currentMtime;
-
-					global.GoatBot[prop] = JSON.parse(fs.readFileSync(dir, 'utf-8'));
-					log.success(logName, `Reloaded ${dir.replace(process.cwd(), "")}`);
-				} catch (err) {
-					log.warn(logName, `Can't reload ${dir.replace(process.cwd(), "")}`);
-				}
-			}, 200);
-		}
-	});
-};
-
-// fs.watch can fail on some hosts (inotify limit, Termux, Docker volumes) - never let that stop the bot
+// Safe Hot-Reloading
 for (const [dir, prop, name] of [[dirConfigCommands, 'configCommands', 'CONFIG COMMANDS'], [dirConfig, 'config', 'CONFIG']]) {
 	try {
-		watchAndReloadConfig(dir, 'change', prop, name);
-	}
-	catch (err) {
-		log.warn(name, `Hot-reload disabled: ${err.message}`);
-	}
+		let lastModified = fs.statSync(dir).mtimeMs;
+		fs.watch(dir, (eventType) => {
+			if (eventType === 'change') {
+				setTimeout(() => {
+					try {
+						const currentMtime = fs.statSync(dir).mtimeMs;
+						if (lastModified === currentMtime) return;
+						lastModified = currentMtime;
+						global.GoatBot[prop] = JSON.parse(fs.readFileSync(dir, 'utf-8'));
+						log.success(name, `Hot-reloaded ${path.basename(dir)}`);
+					} catch (err) {}
+				}, 250);
+			}
+		});
+	} catch (err) {}
 }
 
-global.GoatBot.envGlobal = global.GoatBot.configCommands.envGlobal;
-global.GoatBot.envCommands = global.GoatBot.configCommands.envCommands;
-global.GoatBot.envEvents = global.GoatBot.configCommands.envEvents;
-
-const getText = global.utils.getText;
-
-// Auto Restart Manager
+// Auto-Restart Scheduler
 if (config.autoRestart) {
 	const time = config.autoRestart.time;
 	if (!isNaN(time) && time > 0) {
-		utils.log.info("AUTO RESTART", getText("Goat", "autoRestart1", utils.convertTime(time, true)));
 		setTimeout(() => {
-			utils.log.info("AUTO RESTART", "Restarting system...");
+			utils.log.info("AUTO RESTART", "Scheduled restart triggered...");
 			process.exit(2);
 		}, time);
-	} else if (typeof time == "string" && time.match(/^((((\d+,)+\d+|(\d+(\/|-|#)\d+)|\d+L?|\*(\/\d+)?|L(-\d+)?|\?|[A-Z]{3}(-[A-Z]{3})?) ?){5,7})$/gmi)) {
-		utils.log.info("AUTO RESTART", getText("Goat", "autoRestart2", time));
-		const cron = require("node-cron");
-		cron.schedule(time, () => {
-			utils.log.info("AUTO RESTART", "Restarting system...");
-			process.exit(2);
-		});
 	}
 }
 
-// Async Main Bootstrapper
-const withTimeout = (promise, ms, label) => Promise.race([
-	promise,
-	new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s`)), ms))
-]);
-
-// Gmail + Google Drive are optional extras. They run in the background so a slow or
-// blocked Google API can never delay (or hang) the Facebook login.
+// Optional Non-Blocking Google Services Init
 async function initGoogleServices() {
-	// 1. Gmail & OAuth2 Setup
 	try {
 		const { gmailAccount } = config.credentials || {};
-		if (gmailAccount?.email && gmailAccount?.refreshToken) {
-			const { email, clientId, clientSecret, refreshToken } = gmailAccount;
-			const OAuth2 = google.auth.OAuth2;
-			const OAuth2_client = new OAuth2(clientId, clientSecret);
-			OAuth2_client.setCredentials({ refresh_token: refreshToken });
-
-			const accessToken = await withTimeout(OAuth2_client.getAccessToken(), 15000, "Gmail token");
+		if (gmailAccount?.email && gmailAccount?.refreshToken && gmailAccount?.clientId && gmailAccount?.clientSecret) {
+			const { google } = require("googleapis");
+			const nodemailer = require("nodemailer");
+			const OAuth2_client = new google.auth.OAuth2(gmailAccount.clientId, gmailAccount.clientSecret);
+			OAuth2_client.setCredentials({ refresh_token: gmailAccount.refreshToken });
+			const accessToken = await OAuth2_client.getAccessToken();
 			const transporter = nodemailer.createTransport({
 				host: 'smtp.gmail.com',
 				service: 'Gmail',
 				auth: {
 					type: 'OAuth2',
-					user: email,
-					clientId,
-					clientSecret,
-					refreshToken,
+					user: gmailAccount.email,
+					clientId: gmailAccount.clientId,
+					clientSecret: gmailAccount.clientSecret,
+					refreshToken: gmailAccount.refreshToken,
 					accessToken
 				}
 			});
-
-			global.utils.sendMail = async ({ to, subject, text, html, attachments }) => {
-				return await transporter.sendMail({ from: email, to, subject, text, html, attachments });
-			};
+			global.utils.sendMail = async ({ to, subject, text, html, attachments }) =>
+				await transporter.sendMail({ from: gmailAccount.email, to, subject, text, html, attachments });
 			global.utils.transporter = transporter;
 		}
 	} catch (err) {
-		log.warn("GMAIL_INIT", "Gmail/Nodemailer bypass: " + err.message);
+		log.warn("GMAIL_INIT", "Skipped Gmail setup: " + err.message);
 	}
 
-	// 2. Google Drive Setup
 	try {
 		if (utils.drive && typeof utils.drive.checkAndCreateParentFolder === "function") {
-			utils.drive.parentID = await withTimeout(utils.drive.checkAndCreateParentFolder("AliyaBot"), 20000, "Google Drive");
+			utils.drive.parentID = await utils.drive.checkAndCreateParentFolder("AliyaBot");
 		}
 	} catch (err) {
-		log.warn("GDRIVE_INIT", "Google Drive bypass: " + err.message);
+		log.warn("GDRIVE_INIT", "Skipped Google Drive setup: " + err.message);
 	}
 }
 
 (async () => {
-	initGoogleServices().catch(err => log.warn("GOOGLE_INIT", err.message));
-
-	// 3. Trigger Core Login (immediately - no waiting for Google)
-	console.log("\x1b[35m\x1b[1m👑 ALIYA V4\x1b[0m \x1b[90m|\x1b[0m \x1b[36mStarting login...\x1b[0m \x1b[90m|\x1b[0m \x1b[32mMulti-group mode ON\x1b[0m");
-	require(`./bot/login/login.js`);
+	initGoogleServices().catch(() => {});
+	console.log("\x1b[35m\x1b[1m👑 ALIYA V4 MASTER CORE\x1b[0m \x1b[90m|\x1b[0m \x1b[36mInitializing Multi-Account Login...\x1b[0m");
+	require("./bot/login/login.js");
 })();
+	
