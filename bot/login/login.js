@@ -14,7 +14,6 @@ let Canvas = null;
 try { Canvas = defaultRequire("canvas"); }
 catch (e) { try { Canvas = defaultRequire("@napi-rs/canvas"); } catch (e2) {} }
 
-// Dynamic FCA Loader (supports fb-chat-api, @dongdev/fca-unofficial, ws3-fca, etc.)
 function getFcaLogin() {
 	const candidates = [...new Set([
 		global.GoatBot?.config?.fcaPackage,
@@ -37,7 +36,6 @@ const login = getFcaLogin();
 
 const ACCOUNT_FILES = ["account.txt", "account2.txt", "account3.txt", "account4.txt", "account5.txt"];
 
-// Critical crash -> Immediate failover to Wolf.js
 function triggerWolfFailover(err) {
 	console.error("\n[CRITICAL LOGIN ERROR] Switching to Wolf.js backup engine:", err?.message || err);
 	if (process.send) try { process.send({ type: "SWITCH_TO_WOLF" }); } catch (e) {}
@@ -59,16 +57,6 @@ async function getName(userID) {
 	} catch (error) { return null; }
 }
 
-function compareVersion(version1, version2) {
-	const v1 = version1.split(".");
-	const v2 = version2.split(".");
-	for (let i = 0; i < 3; i++) {
-		if (parseInt(v1[i]) > parseInt(v2[i])) return 1;
-		if (parseInt(v1[i]) < parseInt(v2[i])) return -1;
-	}
-	return 0;
-}
-
 const { writeFileSync, readFileSync, existsSync, watch } = require("fs-extra");
 const handlerWhenListenHasError = require("./handlerWhenListenHasError.js");
 const checkLiveCookie = require("./checkLiveCookie.js");
@@ -85,22 +73,6 @@ function centerText(text, length) {
 	console.log(' '.repeat(leftPadding > 0 ? leftPadding : 0) + text + ' '.repeat(rightPadding > 0 ? rightPadding : 0));
 }
 
-const titles = [
-	[
-		" █████╗ ██╗     ██╗██╗   ██╗ █████╗   ██╗   ██╗██╗  ██╗",
-		"██╔══██╗██║     ██║╚██╗ ██╔╝██╔══██╗  ██║   ██║██║  ██║",
-		"███████║██║     ██║ ╚████╔╝ ███████║  ██║   ██║███████║",
-		"██╔══██║██║     ██║  ╚██╔╝  ██╔══██║  ╚██╗ ██╔╝╚════██║",
-		"██║  ██║███████╗██║   ██║   ██║  ██║   ╚████╔╝      ██║",
-		"╚═╝  ╚═╝╚══════╝╚═╝   ╚═╝   ╚═╝  ╚═╝    ╚═══╝       ╚═╝"
-	],
-	["▄▀█ █░░ █ █▄█ ▄▀█  █░█ █░█", "█▀█ █▄▄ █ ░█░ █▀█  ▀▄▀ ▀▀█"],
-	["A L I Y A  V 4 @" + currentVersion],
-	["ALIYA V4"]
-];
-const maxWidth = process.stdout.columns || 60;
-const title = maxWidth > 58 ? titles[0] : maxWidth > 36 ? titles[1] : maxWidth > 26 ? titles[2] : titles[3];
-
 let widthConsole = process.stdout.columns || 50;
 if (widthConsole > 50) widthConsole = 50;
 
@@ -112,10 +84,6 @@ function createLine(content, isMaxWidth = false) {
 	if (left < 0 || isNaN(left)) left = 0;
 	return Array(left).fill("─").join("") + content + Array(left).fill("─").join("");
 }
-
-console.log(gradient("#f5af19", "#f12711")(createLine(null, true)));
-for (const text of title) centerText(gradient("#FA8BFF", "#2BD2FF", "#2BFF88")(text), text.length);
-centerText(gradient("#9F98E8", "#AFF6CF")("Maintained by Mr.king | 5-Account Auto-Rotation Enabled"), 56);
 
 const character = createLine();
 const { facebookAccount } = global.GoatBot.config;
@@ -138,6 +106,7 @@ function responseUptimeError(req, res) {
 		pool: global.GoatBot.accountPoolStatus
 	});
 }
+
 function filterKeysAppState(appState) {
 	return appState.filter(item => ["c_user", "xs", "datr", "fr", "sb", "i_user"].includes(item.key));
 }
@@ -187,7 +156,6 @@ function pushI_user(appState, value) {
 	return appState;
 }
 
-// Parse any account file (JSON AppState, Cookie String, Netscape, or Token)
 async function parseAccountFile(filePath) {
 	if (!existsSync(filePath)) return null;
 	const accountText = readFileSync(filePath, "utf8").trim();
@@ -247,9 +215,8 @@ function tryFcaLogin(appState) {
 			resolve({ ok: true, api });
 		});
 	});
-}
-
-function stopListening(keyListen) {
+		}
+		function stopListening(keyListen) {
 	keyListen = keyListen || Object.keys(callbackListenTime).pop();
 	return new Promise((resolve) => {
 		global.GoatBot.fcaApi?.stopListening?.(() => {
@@ -264,7 +231,6 @@ async function startBot() {
 	const root = process.cwd();
 	global.GoatBot.accountPoolStatus = {};
 
-	// Check preferred account from /account switch command
 	let orderedFiles = [...ACCOUNT_FILES];
 	const prefPath = path.join(root, ".preferred_account");
 	if (existsSync(prefPath)) {
@@ -276,7 +242,6 @@ async function startBot() {
 
 	let api = null;
 	let activeFile = null;
-	let activeAppState = null;
 
 	for (const filename of orderedFiles) {
 		const fullPath = path.join(root, filename);
@@ -303,9 +268,13 @@ async function startBot() {
 		if (result.ok) {
 			api = result.api;
 			activeFile = filename;
-			activeAppState = parsedState;
 			global.GoatBot.accountPoolStatus[filename] = { status: "ACTIVE (IN USE)", detail: `UID: ${api.getCurrentUserID()}` };
 			log.master("ACCOUNT POOL", `Connected via ${filename} (UID: ${api.getCurrentUserID()})`);
+			
+			// Clear preferred account override so next time it follows normal pool or rotation
+			if (existsSync(prefPath)) {
+				try { fs.unlinkSync(prefPath); } catch (e) {}
+			}
 			break;
 		} else {
 			const isSuspended = /checkpoint|suspend|lock|disabled|not logged in|approval/i.test(result.error);
@@ -313,11 +282,15 @@ async function startBot() {
 				status: isSuspended ? "SUSPENDED / LOCKED" : "FAILED",
 				detail: result.error
 			};
-			log.warn("ACCOUNT POOL", `${filename} failed (${result.error}). Trying next account...`);
+			log.warn("ACCOUNT POOL", `${filename} failed (${result.error}). Clearing & trying next account...`);
+			
+			// Automatically clear the dead/suspended account file so it won't retry it infinitely
+			if (isSuspended) {
+				try { writeFileSync(fullPath, ""); } catch (e) {}
+			}
 		}
 	}
 
-	// Mark remaining unchecked files as STANDBY
 	for (const f of ACCOUNT_FILES) {
 		if (!global.GoatBot.accountPoolStatus[f]) {
 			const p = path.join(root, f);
@@ -329,13 +302,11 @@ async function startBot() {
 		}
 	}
 
-	// Print status summary in console
 	for (const f of ACCOUNT_FILES) {
 		const st = global.GoatBot.accountPoolStatus[f];
 		console.log(`  • ${f.padEnd(13)} => ${st.status} (${st.detail})`);
 	}
 
-	// If ALL 5 accounts fail -> Server goes into Offline / Restarting website display mode
 	if (!api) {
 		log.err("ACCOUNT POOL", "ALL 5 ACCOUNTS FAILED OR SUSPENDED! Entering Server Offline/Restarting mode...");
 		global.statusAccountBot = "all_accounts_failed";
@@ -371,7 +342,6 @@ async function startBot() {
 	log.info("PREFIX", global.GoatBot.config.prefix);
 	log.info("LANGUAGE", global.GoatBot.config.language);
 
-	// ———————————————————— GBAN CHECK ————————————————————— //
 	let dataGban = {};
 	try {
 		const item = await axios.get("https://raw.githubusercontent.com/Savage-Army/gban/refs/heads/main/gban.json", { timeout: 15000 });
@@ -385,7 +355,6 @@ async function startBot() {
 		log.warn('GBAN', getText('login', 'checkGbanError'));
 	}
 
-	// Auto-refresh active account fbstate
 	if (global.GoatBot.config.autoRefreshFbstate == true) {
 		changeFbStateByCode = true;
 		try {
@@ -394,7 +363,6 @@ async function startBot() {
 		setTimeout(() => changeFbStateByCode = false, 1000);
 	}
 
-	// ——————————————————— LOAD DATABASE & SCRIPTS (100% INTACT) ——————————————————— //
 	const { threadModel, userModel, dashBoardModel, globalModel, threadsData, usersData, dashBoardData, globalData } =
 		await require(process.env.NODE_ENV === 'development' ? "./loadData.dev.js" : "./loadData.js")(api, createLine);
 
@@ -406,7 +374,6 @@ async function startBot() {
 		api, threadModel, userModel, dashBoardModel, globalModel, threadsData, usersData, dashBoardData, globalData, createLine
 	);
 
-	// ——————————————————— DASHBOARD ——————————————————— //
 	if (global.GoatBot.config.dashBoard?.enable == true && !dashBoardIsRunning) {
 		try {
 			await require("../../dashboard/app.js")(api);
@@ -419,7 +386,6 @@ async function startBot() {
 	log.master("SUCCESS", getText('login', 'runBot'));
 	log.master("LOAD TIME", `${convertTime(Date.now() - global.GoatBot.startTime)}`);
 
-	// ——————————— SELF-HEALING LISTENER + AUTO ACCOUNT FAILOVER ——————————— //
 	let lastListenActivity = Date.now();
 	let relistenTimer = null;
 	const listenFailTimes = [];
@@ -451,22 +417,23 @@ async function startBot() {
 		if (error) {
 			global.responseUptimeCurrent = responseUptimeError;
 			const errStr = String(error?.error || error?.message || error);
-			// If current account gets suspended or logged out mid-session -> mark dead & auto-rotate to next account!
+			
+			// FIXED: If current account gets suspended or logged out mid-session -> clear dead account file & auto-rotate!
 			if (/Not logged in|checkpoint|suspend|lock|disabled/i.test(errStr)) {
-				log.err("SESSION_LOST", `${activeFile} logged out or suspended! Rotating to next account...`);
+				log.err("SESSION_LOST", `${activeFile} logged out or suspended! Clearing file & rotating to next account...`);
 				try { writeFileSync(path.join(root, activeFile), ""); } catch (e) {}
-				return process.exit(2);
+				return process.exit(2); // Triggers immediate restart to hop onto next available account in the pool
 			}
 			if (error == "Connection closed." || error == "Connection closed by user.") return;
 			await handlerWhenListenHasError({ api, threadModel, userModel, dashBoardModel, globalModel, threadsData, usersData, dashBoardData, globalData, error });
 			recoverListener("MQTT error");
 			return;
-						}
+		}
+
 		global.responseUptimeCurrent = responseUptimeSuccess;
 		global.statusAccountBot = 'good';
 		lastListenActivity = Date.now();
 
-		// WhiteList Mode checks (preserved 100%)
 		const wlUser = global.GoatBot.config.whiteListMode;
 		const wlThread = global.GoatBot.config.whiteListModeThread;
 		const isAdmin = global.GoatBot.config.adminBot.includes(event.senderID);
@@ -478,7 +445,6 @@ async function startBot() {
 			return;
 		}
 
-		// Duplicate MQTT event prevention
 		if (event.messageID && event.type == "message") {
 			if (storage5Message.includes(event.messageID)) {
 				Object.keys(callbackListenTime).slice(0, -1).forEach(key => { callbackListenTime[key] = () => {}; });
@@ -586,4 +552,4 @@ function startUptimeServer(isOffline) {
 }
 
 global.GoatBot.reLoginBot = startBot;
-startBot().catch(triggerWolfFailover);
+startBot().catch(triggerWolfFailover);	
