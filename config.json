@@ -55,8 +55,8 @@
   "nickNameBot": "Aliya Official",
   "prefix": "(",
   "database": {
-    "type": "mongodb",
-    "uriMongodb": "mongodb+srv://masterjiraya738_db_user:X901ZSN6RVf28L60@cluster0.huskfaf.mongodb.net/",
+    "type": "sqlite",
+    "uriMongodb": "",
     "autoSyncWhenStart": false,
     "autoRefreshThreadInfoFirstTime": true
   },
