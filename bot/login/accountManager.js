@@ -14,7 +14,7 @@ const path = require("path");
 const ROOT = path.join(__dirname);
 const SLOTS = 5;
 
-const slotFile = n => path.join(ROOT, n === 1 ? "account.txt" : `account${n}.txt`);
+const slotFile = n => path.join(ROOT, "..", "..", n === 1 ? "account.txt" : `account${n}.txt`);
 
 const COOLDOWN = {
 	expired: 10 * 60 * 1000,      // 10 min
