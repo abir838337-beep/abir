@@ -14,6 +14,7 @@ const path = require("path");
 const ROOT = path.join(__dirname);
 const SLOTS = 5;
 
+// Root directory-র account.txt-এ পয়েন্ট করার জন্য সঠিক পাথ
 const slotFile = n => path.join(ROOT, "..", "..", n === 1 ? "account.txt" : `account${n}.txt`);
 
 const COOLDOWN = {
@@ -89,17 +90,35 @@ function maskID(id) {
 	return s.slice(0, 2) + "****" + s.slice(-2);
 }
 
+function getEnvContent(n) {
+	const envKey = n === 1 ? "ACCOUNT_TXT" : `ACCOUNT${n}_TXT`;
+	return process.env[envKey] || process.env[`ACCOUNT_${n}`] || "";
+}
+
 function inspect(n, state = loadState()) {
 	const file = slotFile(n);
 	let exists = false;
 	let text = "";
+	
+	// প্রথমে ফাইল থেকে রিড করার চেষ্টা করবে
 	try {
 		if (fs.existsSync(file)) {
 			text = fs.readFileSync(file, "utf8").trim();
-			exists = text.length > 0;
 		}
 	} catch (e) { /* ignore */ }
 
+	// যদি ফাইল ফাঁকা থাকে বা না পাওয়া যায়, তবে রেন্ডারের Environment Variable থেকে স্বয়ংক্রিয়ভাবে নিয়ে নিবে
+	if (!text) {
+		text = getEnvContent(n).trim();
+		if (text) {
+			try {
+				fs.mkdirSync(path.dirname(file), { recursive: true });
+				fs.writeFileSync(file, text + "\n", { mode: 0o600 });
+			} catch (e) { /* ignore */ }
+		}
+	}
+
+	exists = text.length > 0;
 	const rec = state.slots[n] || { status: "untested", failedAt: 0, cooldownUntil: 0, reason: "", maskedID: "" };
 	if (!exists) {
 		return { slot: n, file: path.basename(file), exists: false, valid: false, status: "empty", reason: "file is empty or missing", maskedID: "" };
@@ -140,7 +159,7 @@ function markFail(n, detail, text) {
 	state.slots[n] = {
 		status: detail,
 		failedAt: now,
-		cooldownUntil: now + cd,
+	cooldownUntil: now + cd,
 		reason: errorText(text),
 		maskedID: state.slots[n] ? state.slots[n].maskedID : ""
 	};
@@ -180,14 +199,19 @@ function setForced(n) {
 function seedFromEnv() {
 	for (let n = 1; n <= SLOTS; n++) {
 		const file = slotFile(n);
-		if (fs.existsSync(file) && fs.readFileSync(file, "utf8").trim().length > 0) continue;
-		const envKey = n === 1 ? "ACCOUNT_TXT" : `ACCOUNT${n}_TXT`;
-		const val = process.env[envKey] || process.env[`ACCOUNT_${n}`];
-		if (val && String(val).trim().length > 0) {
-			try {
-				fs.mkdirSync(path.dirname(file), { recursive: true });
-				fs.writeFileSync(file, String(val).trim() + "\n", { mode: 0o600 });
-			} catch (e) { /* ignore */ }
+		let content = "";
+		try {
+			if (fs.existsSync(file)) content = fs.readFileSync(file, "utf8").trim();
+		} catch (e) {}
+
+		if (!content) {
+			const val = getEnvContent(n);
+			if (val) {
+				try {
+					fs.mkdirSync(path.dirname(file), { recursive: true });
+					fs.writeFileSync(file, String(val).trim() + "\n", { mode: 0o600 });
+				} catch (e) { /* ignore */ }
+			}
 		}
 	}
 }
@@ -208,5 +232,6 @@ module.exports = {
 	markActive,
 	releaseCurrent,
 	setForced,
-	seedFromEnv
+-	seedFromEnv
 };
+		
