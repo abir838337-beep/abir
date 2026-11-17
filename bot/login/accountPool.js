@@ -2,7 +2,7 @@
  * @author Mr.king x Aliya
  * Account pool for Wolf.js (and any other engine that wants to log in by itself).
  *
- * It is a thin layer on top of ../../accountManager.js, so Aliya.js (through index.js) and Wolf.js always
+ * It is a thin layer on top of ./accountManager.js, so Aliya.js (through index.js) and Wolf.js always
  * share ONE truth about the five cookie files (data/accounts.json): when one engine finds an account dead,
  * the other one skips it too.
  *
@@ -13,7 +13,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const manager = require("../../accountManager.js");
+const manager = require("./accountManager.js");
 
 const ROOT = path.join(__dirname, "..", "..");
 const FILES = Array.from({ length: manager.SLOTS }, (_, i) => path.basename(manager.slotFile(i + 1)));
@@ -29,8 +29,6 @@ function note(text) {
 const short = (s, n = 90) => String(s === undefined || s === null ? "" : s).replace(/\s+/g, " ").slice(0, n);
 const errText = e => manager.errorText(e) || String(e);
 
-// Coarse kinds are what engines need (suspended / expired / network / other).
-// `detail` keeps the exact kind (checkpoint, twofa ...) for the status table.
 function classify(err) {
 	const text = errText(err);
 	const detail = manager.classifyError(err);
@@ -57,8 +55,6 @@ function hashText(text) {
 	return `${s.length}:${h >>> 0}`;
 }
 
-// Usable now, in the order they should be tried (a forced account first). `deadOnes` are valid cookie files that
-// are resting after a failed login - tried last, only when nothing else is left.
 function candidates() {
 	const state = manager.loadState();
 	const usable = [];
@@ -79,7 +75,6 @@ function cookie(key, value) {
 	return { key, value, domain: "facebook.com", path: "/", hostOnly: true, creation: now, lastAccessed: now };
 }
 
-// Any cookie format -> fca appState array. opts.iUser adds the i_user cookie (pages / professional profiles).
 async function parse(raw, opts = {}) {
 	const text = String(raw || "").replace(/^\uFEFF/, "").trim();
 	if (!text) throw new Error("cookie file is empty");
@@ -113,7 +108,6 @@ async function parse(raw, opts = {}) {
 	return appState;
 }
 
-// Same rule as login.js: keep only the cookies Facebook needs
 function filterKeys(appState) {
 	return (Array.isArray(appState) ? appState : []).filter(c => c && ["c_user", "xs", "datr", "fr", "sb", "i_user"].includes(c.key));
 }
@@ -127,7 +121,6 @@ function cookieString(appState) {
 	return (Array.isArray(appState) ? appState : []).map(c => `${c.key}=${c.value}`).join("; ");
 }
 
-// Atomic write; never leaves a half-written cookie file behind
 function writeText(file, text) {
 	const target = filePath(file);
 	const tmp = `${target}.${process.pid}.tmp`;
@@ -142,7 +135,6 @@ function writeText(file, text) {
 	}
 }
 
-// The project's own Facebook library first (it is what Aliya.js uses), then the usual packages
 function loadFca() {
 	const names = [path.join(ROOT, "fb-chat-api"), "ws3-fca", "@dongdev/fca-unofficial", "fca-unofficial"];
 	for (const name of names) {
@@ -175,20 +167,17 @@ function tryLogin(appState, opts, ms) {
 	});
 }
 
-// ───────────────────────────── bookkeeping ───────────────────────────── //
-
 function markOk(file) {
 	const n = slotOf(file);
 	if (!n) return;
 	const state = manager.loadState();
 	const rec = state.slots[n];
-	if (rec && manager.COOLDOWN[rec.status]) manager.markActive(n); // it worked after all: forgive
+	if (rec && manager.COOLDOWN[rec.status]) manager.markActive(n);
 }
 
 function markDead(file, kind, text) {
 	const n = slotOf(file);
 	if (!n) return;
-	// Engines only know "suspended" / "expired" - keep the exact reason (checkpoint, 2FA...) from the text
 	let detail = manager.classifyError(text);
 	if (!manager.COOLDOWN[detail]) detail = kind === "suspended" ? "suspended" : "expired";
 	manager.markFail(n, detail, text);
