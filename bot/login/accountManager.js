@@ -100,14 +100,12 @@ function inspect(n, state = loadState()) {
 	let exists = false;
 	let text = "";
 	
-	// প্রথমে ফাইল থেকে রিড করার চেষ্টা করবে
 	try {
 		if (fs.existsSync(file)) {
 			text = fs.readFileSync(file, "utf8").trim();
 		}
 	} catch (e) { /* ignore */ }
 
-	// যদি ফাইল ফাঁকা থাকে বা না পাওয়া যায়, তবে রেন্ডারের Environment Variable থেকে স্বয়ংক্রিয়ভাবে নিয়ে নিবে
 	if (!text) {
 		text = getEnvContent(n).trim();
 		if (text) {
@@ -159,7 +157,7 @@ function markFail(n, detail, text) {
 	state.slots[n] = {
 		status: detail,
 		failedAt: now,
-	cooldownUntil: now + cd,
+		cooldownUntil: now + cd,
 		reason: errorText(text),
 		maskedID: state.slots[n] ? state.slots[n].maskedID : ""
 	};
@@ -232,6 +230,6 @@ module.exports = {
 	markActive,
 	releaseCurrent,
 	setForced,
--	seedFromEnv
+	seedFromEnv
 };
 		
