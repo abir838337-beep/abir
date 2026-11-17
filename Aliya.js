@@ -1,24 +1,73 @@
 /**
  * ============================================================================
  * ALIYA OFFICIAL V4 - MASTER PRIMARY ENGINE
- * Maintained by Mr.king | Full Multi-Account Pool & Self-Healing Architecture
+ * Maintained by Mr.king | Multi-Account Pool & Self-Healing Architecture
+ *
+ * Exit codes (read by index.js):
+ *   2 = planned restart (memory guard / scheduled / listener unstable)
+ *   3 = every account failed -> index.js shows the offline page and retries
+ *   4 = engine cannot run at all -> index.js switches to Wolf.js
+ *   5 = account switched / account died -> immediate restart on the next account
+ *   6 = a npm package is missing -> index.js runs "npm install" and restarts
  * ============================================================================
  */
 "use strict";
 
-process.on('unhandledRejection', error => console.error("[ALIYA_UNHANDLED_REJECTION]", error?.message || error));
-process.on('uncaughtException', error => {
-	console.error("[ALIYA_UNCAUGHT_EXCEPTION]", error?.stack || error);
-	if (process.send) try { process.send({ type: "SWITCH_TO_WOLF" }); } catch (e) {}
-	process.exit(4); // Exit code 4 triggers immediate Wolf.js failover in index.js
+const send = msg => { if (process.send) { try { process.send(msg); } catch (e) { /* supervisor gone */ } } };
+
+// A single broken command must NOT take the whole bot down (old code switched to Wolf.js on ANY error).
+const crashTimes = [];
+process.on("unhandledRejection", error => console.error("[ALIYA_UNHANDLED_REJECTION]", error && error.message ? error.message : error));
+process.on("uncaughtException", error => {
+	console.error("[ALIYA_UNCAUGHT_EXCEPTION]", error && error.stack ? error.stack : error);
+
+	// startup crash because a package is not installed -> let index.js install it
+	const missing = String(error && error.message || "").match(/Cannot find module '([^'./][^']*)'/);
+	if (error && error.code === "MODULE_NOT_FOUND" && missing && !(global.GoatBot && global.GoatBot.startupDone)) {
+		console.error(`[ALIYA] Package "${missing[1]}" is missing - asking index.js to run npm install`);
+		return process.exit(6);
+	}
+
+	// crash loop guard: many errors in a short time -> restart the core (index.js applies back-off / Wolf failover)
+	const now = Date.now();
+	crashTimes.push(now);
+	while (crashTimes.length && now - crashTimes[0] > 60000) crashTimes.shift();
+	if (crashTimes.length >= 8) {
+		console.error("[ALIYA] Too many uncaught errors in 60s - restarting core");
+		process.exit(1);
+	}
 });
+
+process.on("SIGTERM", () => process.exit(0));
+process.on("SIGINT", () => process.exit(0));
 
 require("events").EventEmitter.defaultMaxListeners = 150;
 process.setMaxListeners(150);
 
+// heartbeat for index.js freeze detection (setInterval stops firing if the event loop is blocked)
+setInterval(() => send({ type: "HEARTBEAT" }), 15000).unref();
+
+// memory guard: restart cleanly before the host kills us (index.js passes the limit)
+const RSS_LIMIT_MB = Number(process.env.ALIYA_RSS_LIMIT_MB) || 0;
+if (RSS_LIMIT_MB > 0) {
+	let over = 0;
+	setInterval(() => {
+		const mb = process.memoryUsage().rss / 1048576;
+		if (mb > RSS_LIMIT_MB) {
+			over++;
+			console.warn(`[ALIYA_MEMORY] RSS ${Math.round(mb)}MB is above ${RSS_LIMIT_MB}MB (${over}/2)`);
+			if (over >= 2) {
+				console.warn("[ALIYA_MEMORY] Restarting to free memory...");
+				process.exit(2);
+			}
+		}
+		else over = 0;
+	}, 30000).unref();
+}
+
 const fs = require("fs-extra");
 const path = require("path");
-const log = require('./logger/log.js');
+const log = require("./logger/log.js");
 
 process.env.BLUEBIRD_W_FORGOTTEN_RETURN = 0;
 
@@ -27,7 +76,7 @@ function getConfigPath(baseName, ext = ".json") {
 	const normalPath = path.join(__dirname, `${baseName}${ext}`);
 	if (fs.existsSync(devPath)) return devPath;
 	if (fs.existsSync(normalPath)) return normalPath;
-	throw new Error(`Missing ${baseName}${ext}`);
+	throw new Error(`Missing ${baseName}${ext} or ${baseName}.dev${ext}`);
 }
 
 function validJSON(pathDir) {
@@ -35,19 +84,15 @@ function validJSON(pathDir) {
 	try {
 		JSON.parse(fs.readFileSync(pathDir, "utf-8"));
 		return true;
-	} catch (err) {
+	}
+	catch (err) {
 		throw new Error(`JSON Syntax Error in ${pathDir}: ${err.message}`);
 	}
 }
 
-// Ensure all 5 account files exist in root so rotation never crashes on ENOENT
-const ACCOUNT_FILES = ["account.txt", "account2.txt", "account3.txt", "account4.txt", "account5.txt"];
-for (const accFile of ACCOUNT_FILES) {
-	try {
-		const p = path.join(__dirname, accFile);
-		if (!fs.existsSync(p)) fs.writeFileSync(p, "");
-	} catch (e) {}
-}
+// make sure account.txt ... account5.txt exist (and fill them from ACCOUNT_TXT, ACCOUNT2_TXT ... env vars on cloud hosts)
+try { require("./bot/login/accountPool.js").seedFromEnv(); }
+catch (e) { console.warn("[ALIYA] Could not prepare account files:", e.message); }
 
 const dirConfig = getConfigPath("config", ".json");
 const dirConfigCommands = getConfigPath("configCommands", ".json");
@@ -56,14 +101,15 @@ const dirAccount = path.join(__dirname, "account.txt");
 for (const pathDir of [dirConfig, dirConfigCommands]) {
 	try {
 		validJSON(pathDir);
-	} catch (err) {
+	}
+	catch (err) {
 		log.error("CONFIG", `${err.message}\nPlease fix JSON syntax and restart.`);
 		process.exit(1);
 	}
 }
 
 const config = require(dirConfig);
-if (config.whiteListMode?.whiteListIds && Array.isArray(config.whiteListMode.whiteListIds)) {
+if (config.whiteListMode && Array.isArray(config.whiteListMode.whiteListIds)) {
 	config.whiteListMode.whiteListIds = config.whiteListMode.whiteListIds.map(id => id.toString());
 }
 const configCommands = require(dirConfigCommands);
@@ -86,7 +132,7 @@ global.GoatBot = {
 	envCommands: configCommands.envCommands || {},
 	envEvents: configCommands.envEvents || {},
 	envGlobal: configCommands.envGlobal || {},
-	reLoginBot: function () {},
+	reLoginBot: function () { },
 	Listening: null,
 	oldListening: [],
 	callbackListenTime: {},
@@ -94,7 +140,8 @@ global.GoatBot = {
 	fcaApi: null,
 	botID: null,
 	activeAccountFile: "account.txt",
-	accountPoolStatus: {}
+	accountPoolStatus: {},
+	startupDone: false
 };
 
 global.db = {
@@ -139,52 +186,67 @@ global.temp = {
 	contentScripts: { cmds: {}, events: {} }
 };
 
-// Safe Hot-Reloading
-for (const [dir, prop, name] of [[dirConfigCommands, 'configCommands', 'CONFIG COMMANDS'], [dirConfig, 'config', 'CONFIG']]) {
+// Safe hot-reloading of config files
+for (const [dir, prop, name] of [[dirConfigCommands, "configCommands", "CONFIG COMMANDS"], [dirConfig, "config", "CONFIG"]]) {
 	try {
 		let lastModified = fs.statSync(dir).mtimeMs;
-		fs.watch(dir, (eventType) => {
-			if (eventType === 'change') {
-				setTimeout(() => {
-					try {
-						const currentMtime = fs.statSync(dir).mtimeMs;
-						if (lastModified === currentMtime) return;
-						lastModified = currentMtime;
-						global.GoatBot[prop] = JSON.parse(fs.readFileSync(dir, 'utf-8'));
-						log.success(name, `Hot-reloaded ${path.basename(dir)}`);
-					} catch (err) {}
-				}, 250);
-			}
+		fs.watch(dir, eventType => {
+			if (eventType !== "change") return;
+			setTimeout(() => {
+				try {
+					const currentMtime = fs.statSync(dir).mtimeMs;
+					if (lastModified === currentMtime) return;
+					lastModified = currentMtime;
+					global.GoatBot[prop] = JSON.parse(fs.readFileSync(dir, "utf-8"));
+					log.success(name, `Hot-reloaded ${path.basename(dir)}`);
+				}
+				catch (err) { log.warn(name, `Can't reload ${path.basename(dir)} (invalid JSON?) - keeping the old one`); }
+			}, 250);
 		});
-	} catch (err) {}
+	}
+	catch (err) { /* fs.watch not supported on this host (Termux, Docker volume...) */ }
 }
 
-// Auto-Restart Scheduler
+// Auto-restart scheduler: milliseconds OR a cron expression
 if (config.autoRestart) {
 	const time = config.autoRestart.time;
-	if (!isNaN(time) && time > 0) {
+	if (!isNaN(time) && Number(time) > 0) {
 		setTimeout(() => {
 			utils.log.info("AUTO RESTART", "Scheduled restart triggered...");
 			process.exit(2);
-		}, time);
+		}, Number(time));
+	}
+	else if (typeof time == "string" && time.match(/^((((\d+,)+\d+|(\d+(\/|-|#)\d+)|\d+L?|\*(\/\d+)?|L(-\d+)?|\?|[A-Z]{3}(-[A-Z]{3})?) ?){5,7})$/gmi)) {
+		try {
+			require("node-cron").schedule(time, () => {
+				utils.log.info("AUTO RESTART", "Scheduled restart triggered...");
+				process.exit(2);
+			});
+		}
+		catch (e) { log.warn("AUTO RESTART", `Invalid cron "${time}": ${e.message}`); }
 	}
 }
 
-// Optional Non-Blocking Google Services Init
+// Optional, non-blocking Google services (a slow Google API must never delay the Facebook login)
+const withTimeout = (promise, ms, label) => Promise.race([
+	promise,
+	new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s`)), ms))
+]);
+
 async function initGoogleServices() {
 	try {
 		const { gmailAccount } = config.credentials || {};
-		if (gmailAccount?.email && gmailAccount?.refreshToken && gmailAccount?.clientId && gmailAccount?.clientSecret) {
+		if (gmailAccount && gmailAccount.email && gmailAccount.refreshToken && gmailAccount.clientId && gmailAccount.clientSecret) {
 			const { google } = require("googleapis");
 			const nodemailer = require("nodemailer");
 			const OAuth2_client = new google.auth.OAuth2(gmailAccount.clientId, gmailAccount.clientSecret);
 			OAuth2_client.setCredentials({ refresh_token: gmailAccount.refreshToken });
-			const accessToken = await OAuth2_client.getAccessToken();
+			const accessToken = await withTimeout(OAuth2_client.getAccessToken(), 15000, "Gmail token");
 			const transporter = nodemailer.createTransport({
-				host: 'smtp.gmail.com',
-				service: 'Gmail',
+				host: "smtp.gmail.com",
+				service: "Gmail",
 				auth: {
-					type: 'OAuth2',
+					type: "OAuth2",
 					user: gmailAccount.email,
 					clientId: gmailAccount.clientId,
 					clientSecret: gmailAccount.clientSecret,
@@ -196,22 +258,23 @@ async function initGoogleServices() {
 				await transporter.sendMail({ from: gmailAccount.email, to, subject, text, html, attachments });
 			global.utils.transporter = transporter;
 		}
-	} catch (err) {
+	}
+	catch (err) {
 		log.warn("GMAIL_INIT", "Skipped Gmail setup: " + err.message);
 	}
 
 	try {
 		if (utils.drive && typeof utils.drive.checkAndCreateParentFolder === "function") {
-			utils.drive.parentID = await utils.drive.checkAndCreateParentFolder("AliyaBot");
+			utils.drive.parentID = await withTimeout(utils.drive.checkAndCreateParentFolder("AliyaBot"), 20000, "Google Drive");
 		}
-	} catch (err) {
+	}
+	catch (err) {
 		log.warn("GDRIVE_INIT", "Skipped Google Drive setup: " + err.message);
 	}
 }
 
 (async () => {
-	initGoogleServices().catch(() => {});
+	initGoogleServices().catch(() => { });
 	console.log("\x1b[35m\x1b[1m👑 ALIYA V4 MASTER CORE\x1b[0m \x1b[90m|\x1b[0m \x1b[36mInitializing Multi-Account Login...\x1b[0m");
 	require("./bot/login/login.js");
 })();
-	

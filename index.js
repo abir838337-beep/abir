@@ -1,53 +1,136 @@
-/**
- * ============================================================================
- * ALIYA OFFICIAL V4 - UNIVERSAL LAUNCHER & MASTER SUPERVISOR
- * Maintained by Mr.king | Supports Render, Railway, Replit, Termux, Linux, VPS, Vercel
- * Features:
- *  - Instant Public Port Health & Live Restarting Website Page
- *  - Master-to-Wolf Fallback: If Aliya.js fails fatally or repeatedly, switches to Wolf.js
- *  - Auto-Dependency Installer & Multi-Account Pre-flight Check
- * ============================================================================
- */
+// =============================================================================
+// ALIYA OFFICIAL V4 - SUPERVISOR / UNIVERSAL LAUNCHER (index.js)
+// Maintained by Mr.king
+//
+// Runs the same way on: Render, Railway, Replit, Termux, Linux, Ubuntu, VPS,
+// VS Code terminal, Windows. (Vercel is serverless: a Messenger bot cannot stay
+// online there, so it only hosts a status page, see vercel.json.)
+//
+// What this file does:
+//   1. Opens the public PORT within ~100 ms, so host health checks pass while
+//      the bot is still logging in. The bot runs on a private port and the
+//      public server proxies the dashboard to it.
+//   2. Starts Aliya.js (main engine) with an IPC channel and understands its
+//      exit codes (table below). It restarts the bot after ANY exit, with a
+//      smart back-off, so the server never stays off by accident.
+//   3. If Aliya.js has a big problem (cannot run, syntax error, crash loop),
+//      it starts Wolf.js (safe-mode engine) and tries Aliya.js again later.
+//   4. When every account failed, it shows the "Restarting / Offline" page,
+//      retries with back-off, and retries instantly when you edit a cookie file.
+//   5. Detects a frozen bot (no heartbeat) and kills + restarts it.
+//   6. Installs missing npm packages by itself (first boot and exit code 6).
+//
+// Exit codes (same table in Aliya.js and Wolf.js):
+//   0  clean exit              -> restart in 1s
+//   1  crash                   -> restart with back-off, Wolf.js after repeated crashes
+//   2  planned restart         -> restart in 1s (memory guard, schedule, MQTT unstable)
+//   3  every account failed    -> offline page, retry with back-off / on cookie edit
+//   4  engine cannot run       -> switch to Wolf.js immediately
+//   5  account dead / switched -> restart in 1s on the next account
+//   6  npm package missing     -> npm install, then restart
+//
+// IPC messages from the bot (all optional): HEARTBEAT, READY, POOL,
+// ACCOUNT_CONNECTED, ALL_ACCOUNTS_FAILED.
+//
+// Optional environment variables:
+//   PORT                     public port (default 8080)
+//   ALIYA_NO_PROXY=1         the bot owns the public port itself
+//   ALIYA_MAX_MEM_MB         Node heap cap (default 60% of the real memory limit)
+//   ALIYA_RSS_LIMIT_MB       bot restarts itself above this RSS (default 85%)
+//   ALIYA_WOLF_AFTER         quick crashes in a row before Wolf.js (default 4)
+//   ALIYA_WOLF_RETRY_MS      how long Wolf.js runs before trying Aliya.js again (default 900000)
+//   ALIYA_OFFLINE_DELAYS_S   retry delays when all accounts failed (default 30,60,120,300,600,900)
+//   ALIYA_HEARTBEAT_TIMEOUT_MS  freeze limit (default 120000)
+//   ALIYA_SELF_URL           public URL used for the keep-awake ping (auto-detected on Render/Railway/Replit)
+//   ALIYA_SELF_PING=0        disable the keep-awake ping
+// =============================================================================
+
 "use strict";
 
-const { spawn } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 const http = require("http");
+const https = require("https");
 const net = require("net");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const PRIMARY_BOT_FILE = "Aliya.js";
-const FALLBACK_BOT_FILE = "Wolf.js";
 const ROOT = __dirname;
+const MAIN_FILE = "Aliya.js";
+const WOLF_FILE = "Wolf.js";
+const SYNTAX_CHECK_FILES = [MAIN_FILE, path.join("bot", "login", "login.js")];
+
+function envMs(name, fallback) {
+	const raw = process.env[name];
+	if (raw === undefined || raw === "") return fallback;
+	const n = Number(raw);
+	return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
 const REQUESTED_PORT = Number(process.env.PORT) || 8080;
 let useProxy = process.env.ALIYA_NO_PROXY !== "1";
+const QUICK_RESTART_MS = envMs("ALIYA_QUICK_RESTART_MS", 1000);
+const BASE_BACKOFF_MS = envMs("ALIYA_BASE_BACKOFF_MS", 2000);
+const MAX_BACKOFF_MS = envMs("ALIYA_MAX_BACKOFF_MS", 300000);
+const STABLE_AFTER_MS = envMs("ALIYA_STABLE_AFTER_MS", 120000);
+const HEARTBEAT_TIMEOUT_MS = envMs("ALIYA_HEARTBEAT_TIMEOUT_MS", 120000);
+const WOLF_AFTER = Math.max(1, envMs("ALIYA_WOLF_AFTER", 4));
+const WOLF_RETRY_MS = envMs("ALIYA_WOLF_RETRY_MS", 15 * 60 * 1000);
+const ACCOUNT_POLL_MS = envMs("ALIYA_ACCOUNT_POLL_MS", 5000);
+const FREEZE_CHECK_MS = Math.max(200, envMs("ALIYA_FREEZE_CHECK_MS", 15000));
+const OFFLINE_DELAYS_MS = (process.env.ALIYA_OFFLINE_DELAYS_S || "30,60,120,300,600,900")
+	.split(",").map(s => Number(s.trim()) * 1000).filter(n => Number.isFinite(n) && n >= 0);
+if (!OFFLINE_DELAYS_MS.length) OFFLINE_DELAYS_MS.push(60000);
 
-const QUICK_RESTART_MS = 1500;
-const BASE_BACKOFF_MS = 2000;
-const MAX_BACKOFF_MS = 180000;
-const STABLE_AFTER_MS = 90000;
-const MAX_PRIMARY_FAILS_BEFORE_WOLF = 3;
+const BANNER = `
+  █████╗ ██╗     ██╗██╗   ██╗ █████╗     ██╗   ██╗██╗  ██╗
+ ██╔══██╗██║     ██║╚██╗ ██╔╝██╔══██╗    ██║   ██║██║  ██║
+ ███████║██║     ██║ ╚████╔╝ ███████║    ██║   ██║███████║
+ ██╔══██║██║     ██║  ╚██╔╝  ██╔══██║    ╚██╗ ██╔╝╚════██║
+ ██║  ██║███████╗██║   ██║   ██║  ██║     ╚████╔╝      ██║
+ ╚═╝  ╚═╝╚══════╝╚═╝   ╚═╝   ╚═╝  ╚═╝      ╚═══╝       ╚═╝
+`;
 
+// ───────────────────────────── state ───────────────────────────── //
+
+let mode = "main";               // "main" = Aliya.js, "wolf" = Wolf.js
 let child = null;
 let childStartedAt = 0;
-let botPort = null;
+let botPort = null;              // private port of the running bot (null = not running)
 let publicPort = REQUESTED_PORT;
 let publicServer = null;
 let shuttingDown = false;
 let starting = false;
+let installing = false;
 let restartTimer = null;
+let wolfTimer = null;
+let offlinePoll = null;
+let switchTarget = null;         // "main" | "wolf" while we are stopping the child on purpose
 let launchCount = 0;
-let failStreak = 0;
-let activeCore = PRIMARY_BOT_FILE;
-let serverOfflineMode = false;
+let failStreak = 0;              // quick crashes in a row (not counting account switches)
+let accountSwitches = 0;
+let totalCrashes = 0;
+let ready = false;               // the running child logged in and finished loading
+let gotHeartbeat = false;
+let lastHeartbeat = 0;
+let lastTick = Date.now();
+let activeAccount = null;
+let lastPool = null;
+let lastOfflineReason = "";
+let offline = null;              // null = fine, object = all accounts failed
+let wolfSince = 0;
+let lastExitInfo = "none yet";
+const switchTimes = [];
+const npmTries = [];
+
+// ───────────────────────────── helpers ───────────────────────────── //
 
 function now() {
 	return new Date().toTimeString().split(" ")[0];
 }
 
-function log(symbol, tag, msg) {
-	console.log(`[${now()}] ${symbol} [${tag}] ──► ${msg}`);
+function log(tag, msg) {
+	console.log(`[${now()}] [${tag}] ${msg}`);
 }
 
 function formatUptime(sec) {
@@ -56,6 +139,11 @@ function formatUptime(sec) {
 	const m = Math.floor((sec % 3600) / 60);
 	const s = Math.floor(sec % 60);
 	return `${d}d ${h}h ${m}m ${s}s`;
+}
+
+function fileOk(rel) {
+	try { return fs.statSync(path.join(ROOT, rel)).isFile(); }
+	catch (e) { return false; }
 }
 
 function isChildRunning() {
@@ -79,81 +167,142 @@ function detectMemLimitMB() {
 		try {
 			const value = Number(fs.readFileSync(file, "utf8").trim());
 			if (Number.isFinite(value) && value > 0 && value < limit) limit = value;
-		} catch (e) {}
+		}
+		catch (e) { /* not a container */ }
 	}
 	return Math.floor(limit / 1048576);
 }
 
-const HEAP_MB = Number(process.env.ALIYA_MAX_MEM_MB)
-	|| Math.min(4096, Math.max(256, Math.floor(detectMemLimitMB() * 0.65)));
+const MEM_LIMIT_MB = detectMemLimitMB();
+// Heap cap = 60% of the real memory limit: Node runs GC harder instead of being OOM-killed.
+const HEAP_MB = Number(process.env.ALIYA_MAX_MEM_MB) || Math.min(4096, Math.max(192, Math.floor(MEM_LIMIT_MB * 0.6)));
+// The bot restarts itself cleanly above this RSS (see Aliya.js memory guard).
+const RSS_LIMIT_MB = envMs("ALIYA_RSS_LIMIT_MB", Math.min(6144, Math.max(256, Math.floor(MEM_LIMIT_MB * 0.85))));
 
-function prepareFiles() {
-	const accFiles = ["account.txt", "account2.txt", "account3.txt", "account4.txt", "account5.txt"];
-	accFiles.forEach((f, idx) => {
-		const fullPath = path.join(ROOT, f);
-		if (!fs.existsSync(fullPath)) {
-			const envKey = idx === 0 ? "ACCOUNT_TXT" : `ACCOUNT${idx + 1}_TXT`;
-			const envVal = process.env[envKey] || "";
-			try {
-				fs.writeFileSync(fullPath, envVal);
-			} catch (e) {}
-		}
-	});
+// All account files: account.txt, account2.txt ... (and account.dev.txt)
+function accountSnapshot() {
+	try {
+		return fs.readdirSync(ROOT)
+			.filter(f => /^account\d*(\.dev)?\.txt$/.test(f))
+			.sort()
+			.map(f => {
+				const st = fs.statSync(path.join(ROOT, f));
+				return `${f}:${st.size}:${Math.floor(st.mtimeMs)}`;
+			})
+			.join("|");
+	}
+	catch (e) { return ""; }
 }
 
-function ensureDependencies() {
-	if (fs.existsSync(path.join(ROOT, "node_modules", "express"))) return Promise.resolve();
-	log("📦", "INSTALL", "Installing missing dependencies (first boot)...");
-	return new Promise(resolve => {
-		let installer;
-		try {
-			installer = spawn(
-				process.platform === "win32" ? "npm.cmd" : "npm",
-				["install", "--omit=dev", "--no-audit", "--no-fund", "--loglevel=error"],
-				{ cwd: ROOT, stdio: "inherit", shell: process.platform === "win32" }
-			);
-		} catch (e) {
-			log("❌", "INSTALL", `Could not run npm: ${e.message}`);
-			return resolve();
+// Pool info from the bot goes to the public /health page, so cookies and secrets are stripped.
+const SECRET_KEY = /cookie|appstate|token|password|secret|^value$|^xs$|c_user|session/i;
+const SECRET_TEXT = /c_user=|xs=|EAAA[A-Za-z0-9]/;
+function sanitize(v, depth = 0) {
+	if (v === null || v === undefined) return v;
+	if (typeof v === "string") {
+		if (SECRET_TEXT.test(v)) return "[hidden]";
+		return v.length > 140 ? v.slice(0, 140) + "..." : v;
+	}
+	if (typeof v === "number" || typeof v === "boolean") return v;
+	if (depth > 3) return undefined;
+	if (Array.isArray(v)) return v.slice(0, 20).map(x => sanitize(x, depth + 1));
+	if (typeof v === "object") {
+		const out = {};
+		for (const k of Object.keys(v).slice(0, 30)) {
+			if (SECRET_KEY.test(k)) continue;
+			const s = sanitize(v[k], depth + 1);
+			if (s !== undefined) out[k] = s;
 		}
-		installer.on("error", () => resolve());
-		installer.on("exit", () => resolve());
-	});
+		return out;
+	}
+	return undefined;
 }
 
-function sendStatusPage(req, res) {
-	const isPage = (req.method === "GET" || req.method === "HEAD") && (req.url === "/" || req.url.startsWith("/?"));
-	if (isPage) {
-		const title = serverOfflineMode ? "Aliya Bot - Offline / All Accounts Failed" : "Aliya Bot - Restarting / Initializing";
-		const heading = serverOfflineMode ? "⚠️ SERVER OFFLINE (ALL 5 ACCOUNTS FAILED)" : "👑 ALIYA V4 ULTRA — RESTARTING CORE";
-		const desc = serverOfflineMode
-			? "All 5 accounts in the pool (account.txt to account5.txt) failed authentication or are suspended. Update account files to auto-resume."
-			: `Active Engine: ${activeCore} | Server is automatically restarting and initializing systems...`;
+function poolRows(pool) {
+	let list = [];
+	if (Array.isArray(pool)) list = pool;
+	else if (pool && typeof pool === "object")
+		list = Object.entries(pool).map(([k, v]) => (v && typeof v === "object" && !Array.isArray(v)) ? { name: k, ...v } : { name: k, status: v });
+	return list.slice(0, 10).map(item => {
+		if (item && typeof item === "object")
+			return Object.values(item).filter(x => ["string", "number", "boolean"].includes(typeof x)).map(String).join("  |  ");
+		return String(item);
+	}).filter(Boolean);
+}
 
-		res.writeHead(serverOfflineMode ? 503 : 200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Refresh": "6" });
-		res.end(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>
-<style>body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:radial-gradient(circle at 20% 20%,#240046,#10002b 50%,#000);font-family:system-ui,sans-serif;color:#fff;text-align:center;padding:20px}.box{max-width:480px;padding:30px;border-radius:20px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15)}h1{font-size:22px;background:linear-gradient(90deg,#f72585,#b5179e,#4cc9f0);-webkit-background-clip:text;color:transparent}p{opacity:0.85;line-height:1.5;font-size:14px}</style></head>
-<body><div class="box"><h1>${heading}</h1><p>${desc}</p><p style="font-size:12px;opacity:0.6">Auto-refreshing every 6 seconds...</p></div></body></html>`);
-		return;
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;" }[c]));
+
+function renderPage({ heading, color, message, rows = [], refresh = 10 }) {
+	return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="${refresh}"><title>Aliya Official V4</title>
+<style>body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:radial-gradient(circle at 20% 20%,#3a0ca3,#10002b 45%,#000);font-family:system-ui,sans-serif;color:#fff;text-align:center}.card{width:min(92vw,520px);padding:32px 24px}h1{margin:0 0 12px;color:${color}}p{opacity:.85;line-height:1.5}.row{font-size:13px;opacity:.75;padding:6px 0;border-top:1px solid rgba(255,255,255,.12)}</style></head>
+<body><div class="card"><h1>${esc(heading)}</h1><p>${esc(message)}</p>${rows.map(r => `<div class="row">${esc(r)}</div>`).join("")}<p style="font-size:12px;opacity:.5">This page refreshes by itself.</p></div></body></html>`;
+}
+
+function currentPage() {
+	if (offline && !ready) {
+		return renderPage({
+			heading: "Aliya Bot Server Restarting / Offline",
+			color: "#ff4d6d",
+			message: "All accounts (account.txt to account5.txt) failed or are suspended. The bot retries automatically, and immediately after you update a cookie file.",
+			rows: poolRows(lastPool)
+		});
+	}
+	if (mode === "wolf") {
+		return renderPage({
+			heading: "Aliya Safe Mode (Wolf)",
+			color: "#ffb703",
+			message: "The main engine had a problem, so the safe-mode engine is keeping the bot online. The main engine is retried automatically.",
+			rows: poolRows(lastPool),
+			refresh: 15
+		});
+	}
+	return renderPage({ heading: "ALIYA V4", color: "#4cc9f0", message: "Bot is starting. This page refreshes by itself.", refresh: 5 });
+}
+
+function stateName() {
+	if (offline && !ready) return "offline";
+	if (!botPort && useProxy) return "starting";
+	if (!ready) return "starting";
+	return mode === "wolf" ? "safe-mode" : "online";
+}
+
+// ─────────────────────── public server (health + proxy) ─────────────────────── //
+
+function isPageRequest(req) {
+	return (req.method === "GET" || req.method === "HEAD") && (req.url === "/" || req.url.startsWith("/?"));
+}
+
+function sendFallback(req, res) {
+	if (res.headersSent) return res.destroy();
+	if (isPageRequest(req)) {
+		res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+		return res.end(currentPage());
 	}
 	res.writeHead(503, { "Content-Type": "application/json", "Retry-After": "5" });
-	res.end(JSON.stringify({ status: serverOfflineMode ? "offline_all_accounts_failed" : "restarting", core: activeCore }));
+	res.end(JSON.stringify({ status: stateName() }));
 }
 
 function handleHealth(res) {
 	res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
 	res.end(JSON.stringify({
-		status: serverOfflineMode ? "offline" : "ok",
-		core: activeCore,
-		bot: botPort ? "running" : "restarting",
+		status: stateName(),
+		engine: mode === "wolf" ? WOLF_FILE : MAIN_FILE,
+		activeAccount,
+		accounts: sanitize(lastPool) || null,
+		offlineReason: offline && !ready ? (lastOfflineReason || "all accounts failed") : undefined,
 		launches: launchCount,
+		crashes: totalCrashes,
+		accountSwitches,
+		lastExit: lastExitInfo,
 		uptime: formatUptime(process.uptime()),
-		memoryMB: Math.round(process.memoryUsage().rss / 1024 / 1024)
+		memoryMB: Math.round(process.memoryUsage().rss / 1048576)
 	}));
 }
 
 function proxyHttp(req, res) {
-	if (!botPort || serverOfflineMode) return sendStatusPage(req, res);
+	// While every account is dead the engine's own pages mean nothing: show ours.
+	if ((offline && !ready) && isPageRequest(req)) return sendFallback(req, res);
+	if (!botPort) return sendFallback(req, res);
 	const upstream = http.request(
 		{ host: "127.0.0.1", port: botPort, method: req.method, path: req.url, headers: req.headers },
 		upstreamRes => {
@@ -161,16 +310,13 @@ function proxyHttp(req, res) {
 			upstreamRes.pipe(res);
 		}
 	);
-	upstream.on("error", () => {
-		if (!res.headersSent) sendStatusPage(req, res);
-		else res.destroy();
-	});
+	upstream.on("error", () => sendFallback(req, res));
 	res.on("close", () => { if (!res.writableEnded) upstream.destroy(); });
 	req.pipe(upstream);
 }
 
 function proxyUpgrade(req, socket, head) {
-	if (!botPort || serverOfflineMode) return socket.destroy();
+	if (!botPort) return socket.destroy();
 	const upstream = net.connect(botPort, "127.0.0.1", () => {
 		let raw = `${req.method} ${req.url} HTTP/${req.httpVersion}\r\n`;
 		for (let i = 0; i < req.rawHeaders.length; i += 2)
@@ -181,6 +327,8 @@ function proxyUpgrade(req, socket, head) {
 	});
 	upstream.on("error", () => socket.destroy());
 	socket.on("error", () => upstream.destroy());
+	socket.on("close", () => upstream.destroy());
+	upstream.on("close", () => socket.destroy());
 }
 
 function listenOn(server, port) {
@@ -199,24 +347,150 @@ async function openPublicServer() {
 		if (req.url === "/health" || req.url === "/healthz") return handleHealth(res);
 		proxyHttp(req, res);
 	});
+	publicServer.keepAliveTimeout = 65000;
 	publicServer.on("upgrade", proxyUpgrade);
 	publicServer.on("clientError", (err, socket) => socket.destroy());
 
+	// Wanted port busy? Try the next ones, then any free port.
 	const candidates = [REQUESTED_PORT, REQUESTED_PORT + 1, REQUESTED_PORT + 2, 0];
 	for (const port of candidates) {
 		try {
 			publicPort = await listenOn(publicServer, port);
-			log("🌐", "SERVER", `Public gateway active on port ${publicPort} (Health: /health)`);
+			if (port !== REQUESTED_PORT)
+				log("PORT", `Port ${REQUESTED_PORT} is busy. Using port ${publicPort} instead.`);
+			log("SERVER", `Public port ${publicPort} is open (health: /health)`);
+			publicServer.on("error", err => log("SERVER", `Server error: ${err.message}`));
 			return;
-		} catch (err) {
+		}
+		catch (err) {
 			if (err.code !== "EADDRINUSE" && err.code !== "EACCES") throw err;
 		}
 	}
-	throw new Error("No free port available");
+	throw new Error("No free port found");
 }
 
+// ─────────────────────── npm install helper ─────────────────────── //
+
+function runNpmInstall(reason) {
+	if (installing) return Promise.resolve(false);
+	if (!fileOk("package.json")) {
+		log("INSTALL", "package.json not found, skipping npm install.");
+		return Promise.resolve(false);
+	}
+	installing = true;
+	log("INSTALL", `${reason} - running npm install (this can take a few minutes)...`);
+	return new Promise(resolve => {
+		let installer;
+		const finish = ok => { installing = false; resolve(ok); };
+		try {
+			installer = spawn(
+				process.platform === "win32" ? "npm.cmd" : "npm",
+				["install", "--omit=dev", "--no-audit", "--no-fund", "--loglevel=error"],
+				{ cwd: ROOT, stdio: "inherit", shell: process.platform === "win32" }
+			);
+		}
+		catch (e) {
+			log("INSTALL", `Could not run npm: ${e.message}. Run it manually: npm install`);
+			return finish(false);
+		}
+		const killer = setTimeout(() => { try { installer.kill("SIGKILL"); } catch (e) { /* ignore */ } }, 15 * 60 * 1000);
+		installer.on("error", e => { clearTimeout(killer); log("INSTALL", `npm error: ${e.message}`); finish(false); });
+		installer.on("exit", code => {
+			clearTimeout(killer);
+			if (code === 0) log("INSTALL", "Dependencies installed.");
+			else log("INSTALL", `npm install failed (code ${code}). Run it manually: npm install`);
+			finish(code === 0);
+		});
+	});
+}
+
+async function ensureDependencies() {
+	if (fs.existsSync(path.join(ROOT, "node_modules", "express"))) return;
+	await runNpmInstall("node_modules not found");
+}
+
+// ─────────────────────── engine selection (Aliya / Wolf) ─────────────────────── //
+
+function wolfAvailable() {
+	return fileOk(WOLF_FILE);
+}
+
+function checkMainFiles() {
+	if (!fileOk(MAIN_FILE)) return { ok: false, reason: `${MAIN_FILE} is missing` };
+	for (const rel of SYNTAX_CHECK_FILES) {
+		if (!fileOk(rel)) continue;
+		const r = spawnSync(process.execPath, ["--check", path.join(ROOT, rel)], { cwd: ROOT, timeout: 20000, encoding: "utf8" });
+		if (r.status !== 0) {
+			const firstLines = String(r.stderr || r.error || "").split("\n").filter(Boolean).slice(0, 4).join(" / ");
+			return { ok: false, reason: `syntax error in ${rel}: ${firstLines}` };
+		}
+	}
+	return { ok: true };
+}
+
+function enterWolf(reason) {
+	mode = "wolf";
+	wolfSince = Date.now();
+	log("WOLF", `Switching to ${WOLF_FILE} (${reason}). ${MAIN_FILE} is retried in ${WOLF_RETRY_MS >= 120000 ? Math.round(WOLF_RETRY_MS / 60000) + " min" : Math.round(WOLF_RETRY_MS / 1000) + " s"}.`);
+	if (wolfTimer) clearTimeout(wolfTimer);
+	wolfTimer = setTimeout(tryMainAgain, WOLF_RETRY_MS);
+}
+
+function leaveWolfTimer() {
+	if (wolfTimer) { clearTimeout(wolfTimer); wolfTimer = null; }
+}
+
+function tryMainAgain() {
+	wolfTimer = null;
+	if (shuttingDown || mode !== "wolf") return;
+	const check = checkMainFiles();
+	if (!check.ok) {
+		log("WOLF", `${MAIN_FILE} is still broken (${check.reason}). Staying in safe mode.`);
+		wolfTimer = setTimeout(tryMainAgain, WOLF_RETRY_MS);
+		return;
+	}
+	log("WOLF", `${MAIN_FILE} looks healthy again. Switching back from ${WOLF_FILE}...`);
+	requestSwitch("main");
+}
+
+// Stops the running child on purpose and starts the other engine afterwards.
+function requestSwitch(target) {
+	if (!isChildRunning()) { mode = target; if (target === "main") leaveWolfTimer(); return; }
+	switchTarget = target;
+	stopChild();
+}
+
+function stopChild() {
+	if (!isChildRunning()) return;
+	const c = child;
+	try { c.kill("SIGTERM"); } catch (e) { /* ignore */ }
+	setTimeout(() => { try { if (c.exitCode === null) c.kill("SIGKILL"); } catch (e) { /* ignore */ } }, 5000);
+}
+
+function resolveRunTarget() {
+	if (mode === "main") {
+		const check = checkMainFiles();
+		if (check.ok) return MAIN_FILE;
+		if (wolfAvailable()) {
+			enterWolf(check.reason);
+			return WOLF_FILE;
+		}
+		log("ERROR", `Main engine problem and ${WOLF_FILE} is missing: ${check.reason}`);
+		return MAIN_FILE; // let node print the real error; back-off protects the host
+	}
+	if (!wolfAvailable()) {
+		log("WOLF", `${WOLF_FILE} not found. Going back to ${MAIN_FILE}.`);
+		mode = "main";
+		leaveWolfTimer();
+		return MAIN_FILE;
+	}
+	return WOLF_FILE;
+}
+
+// ───────────────────────────── bot process ───────────────────────────── //
+
 async function startBot() {
-	if (shuttingDown || starting || isChildRunning()) return;
+	if (shuttingDown || starting || installing || isChildRunning()) return;
 	if (restartTimer) {
 		clearTimeout(restartTimer);
 		restartTimer = null;
@@ -226,23 +500,30 @@ async function startBot() {
 	let privatePort;
 	try {
 		privatePort = useProxy ? await getFreePort() : publicPort;
-	} catch (e) {
+	}
+	catch (e) {
 		starting = false;
+		log("PORT_FAIL", e.message);
 		return scheduleRestart(BASE_BACKOFF_MS);
 	}
+	const targetFile = resolveRunTarget();
 	starting = false;
 	if (shuttingDown) return;
 
-	// Choose core: Switch to Wolf.js if Aliya.js hit repeated critical failures or if explicitly requested
-	if (!fs.existsSync(path.join(ROOT, activeCore))) {
-		activeCore = fs.existsSync(path.join(ROOT, FALLBACK_BOT_FILE)) ? FALLBACK_BOT_FILE : PRIMARY_BOT_FILE;
-	}
-
 	launchCount++;
-	log("🚀", "SPAWN", `Launching [${activeCore}] | Launch #${launchCount} | Heap: ${HEAP_MB}MB`);
+	ready = false;
+	gotHeartbeat = false;
+	lastHeartbeat = Date.now();
+	console.log("\n" + BANNER);
+	console.log(" ╔═══════════════════════════════════════════════════════════╗");
+	console.log(" ║              ALIYA OFFICIAL V4 ENGINE                     ║");
+	console.log(" ║              DEVELOPER : Mr.king                          ║");
+	console.log(` ║              ENGINE    : ${targetFile.padEnd(33)}║`);
+	console.log(` ║              LAUNCH    : ${String(launchCount).padEnd(33)}║`);
+	console.log(" ╚═══════════════════════════════════════════════════════════╝\n");
 
 	try {
-		child = spawn(process.execPath, [`--max-old-space-size=${HEAP_MB}`, activeCore], {
+		child = spawn(process.execPath, [`--max-old-space-size=${HEAP_MB}`, targetFile], {
 			cwd: ROOT,
 			stdio: ["inherit", "inherit", "inherit", "ipc"],
 			shell: false,
@@ -251,125 +532,304 @@ async function startBot() {
 				...process.env,
 				PORT: String(privatePort),
 				ALIYA_PUBLIC_PORT: String(publicPort),
-				ALIYA_ACTIVE_CORE: activeCore
+				ALIYA_SUPERVISED: "1",
+				ALIYA_MODE: mode,
+				ALIYA_RSS_LIMIT_MB: String(RSS_LIMIT_MB)
 			}
 		});
-	} catch (error) {
+	}
+	catch (error) {
 		child = null;
-		log("❌", "SPAWN_FAIL", `Failed to start ${activeCore}: ${error.message}`);
+		log("SPAWN_FAIL", `Failed to start ${targetFile}: ${error.message}`);
 		return scheduleRestart(BASE_BACKOFF_MS);
 	}
 
 	childStartedAt = Date.now();
 	if (useProxy) botPort = privatePort;
-	serverOfflineMode = false;
+	log("SYSTEM", `${targetFile} spawned | PID ${child.pid} | heap cap ${HEAP_MB}MB | RSS limit ${RSS_LIMIT_MB}MB`);
 
-	child.on("message", (msg) => {
-		if (msg && msg.type === "ALL_ACCOUNTS_FAILED") {
-			serverOfflineMode = true;
-			botPort = null;
-			log("🛑", "OFFLINE", "All 5 accounts failed login! Website switched to Restarting/Offline mode.");
-		} else if (msg && msg.type === "SWITCH_TO_WOLF") {
-			log("🐺", "FAILOVER", "Master requested immediate failover to Wolf.js!");
-			activeCore = FALLBACK_BOT_FILE;
-		} else if (msg && msg.type === "LOGIN_SUCCESS") {
-			serverOfflineMode = false;
-			failStreak = 0;
-			log("✅", "ONLINE", `Core [${activeCore}] online using account: ${msg.account}`);
-		}
-	});
-
-	child.on("error", error => log("❌", "PROCESS_ERR", `Error in ${activeCore}: ${error.message}`));
-
-	child.on("exit", (code, signal) => {
-		const ranMs = Date.now() - childStartedAt;
-		child = null;
-		botPort = null;
-		log("💀", "EXIT", `[${activeCore}] stopped | Code: ${code} | Signal: ${signal} | Uptime: ${formatUptime(ranMs / 1000)}`);
-		if (shuttingDown) return;
-
-		// Exit code 3 = All 5 accounts failed or suspended -> stay in offline mode and retry slowly
-		if (code === 3) {
-			serverOfflineMode = true;
-			log("⚠️", "ACCOUNT_POOL", "All 5 accounts unavailable. Retrying account pool in 60s...");
-			return scheduleRestart(60000);
-		}
-
-		// Exit code 4 = Explicit failover request to Wolf.js
-		if (code === 4) {
-			activeCore = FALLBACK_BOT_FILE;
-			failStreak = 0;
-			log("🐺", "WOLF_MODE", "Switching execution core from Aliya.js to Wolf.js!");
-			return scheduleRestart(QUICK_RESTART_MS);
-		}
-
-		// Exit code 2 = Planned hot restart (e.g. account switch command)
-		if (code === 2) {
-			failStreak = 0;
-			return scheduleRestart(QUICK_RESTART_MS);
-		}
-
-		failStreak = ranMs >= STABLE_AFTER_MS ? 1 : failStreak + 1;
-
-		// Master-to-Wolf automatic failover after repeated critical crashes
-		if (activeCore === PRIMARY_BOT_FILE && failStreak >= MAX_PRIMARY_FAILS_BEFORE_WOLF && fs.existsSync(path.join(ROOT, FALLBACK_BOT_FILE))) {
-			log("🐺", "CRITICAL_FAILOVER", `${PRIMARY_BOT_FILE} crashed ${failStreak} times! Switching over to ${FALLBACK_BOT_FILE} supreme backup core...`);
-			activeCore = FALLBACK_BOT_FILE;
-			failStreak = 0;
-			return scheduleRestart(QUICK_RESTART_MS);
-		}
-
-		const delay = ranMs >= STABLE_AFTER_MS
-			? QUICK_RESTART_MS
-			: Math.min(MAX_BACKOFF_MS, BASE_BACKOFF_MS * Math.pow(2, failStreak - 1));
-		scheduleRestart(delay);
-	});
+	child.on("error", error => log("PROCESS_ERR", `Error in ${targetFile}: ${error.message}`));
+	child.on("message", handleChildMessage);
+	child.on("exit", (code, signal) => handleChildExit(targetFile, code, signal));
 }
 
-function scheduleRestart(delay) {
-	if (shuttingDown || restartTimer) return;
-	log("🛡️", "AUTO_HEAL", `Restarting [${activeCore}] in ${Math.round(delay / 1000)}s...`);
+function handleChildMessage(m) {
+	if (!m || typeof m !== "object") return;
+	switch (m.type) {
+		case "HEARTBEAT":
+			gotHeartbeat = true;
+			lastHeartbeat = Date.now();
+			break;
+		case "POOL":
+			lastPool = sanitize(m.pool) || null;
+			if (m.active !== undefined) activeAccount = typeof m.active === "string" ? m.active : null;
+			break;
+		case "ACCOUNT_CONNECTED":
+			activeAccount = typeof m.account === "string" ? m.account : activeAccount;
+			log("ACCOUNT", `Connected with ${activeAccount || "an account"}`);
+			break;
+		case "READY":
+			ready = true;
+			offline = null;
+			stopOfflinePoll();
+			if (typeof m.account === "string") activeAccount = m.account;
+			if (m.pool) lastPool = sanitize(m.pool);
+			log("READY", `Bot is online${activeAccount ? " on " + activeAccount : ""}.`);
+			break;
+		case "ALL_ACCOUNTS_FAILED":
+			lastPool = sanitize(m.pool) || lastPool;
+			lastOfflineReason = typeof m.reason === "string" ? m.reason.slice(0, 200) : "all accounts failed";
+			if (!offline) offline = { since: Date.now(), attempt: -1, snapshot: accountSnapshot() };
+			break;
+		default:
+			break;
+	}
+}
+
+function handleChildExit(targetFile, code, signal) {
+	const ranMs = Date.now() - childStartedAt;
+	child = null;
+	botPort = null;
+	ready = false;
+	lastExitInfo = `${targetFile} code=${code} signal=${signal} after ${formatUptime(ranMs / 1000)} at ${new Date().toISOString()}`;
+	log("EXIT", `${targetFile} stopped | code ${code} | signal ${signal} | ran ${formatUptime(ranMs / 1000)}`);
+	if (shuttingDown) return;
+
+	// planned engine switch (Wolf <-> Aliya)
+	if (switchTarget) {
+		const target = switchTarget;
+		switchTarget = null;
+		mode = target;
+		if (target === "main") {
+			leaveWolfTimer();
+			failStreak = Math.max(0, WOLF_AFTER - 2); // two more quick crashes send us back to Wolf
+		}
+		else failStreak = 0;
+		return scheduleRestart(500);
+	}
+
+	switch (code) {
+		case 3: return handleAllAccountsFailed();
+		case 4: return handleCannotRun(targetFile);
+		case 5: return handleAccountSwitch();
+		case 6: return handleMissingPackage(ranMs);
+		case 2:
+			if (ranMs >= 60000) {
+				failStreak = 0;
+				return scheduleRestart(QUICK_RESTART_MS);
+			}
+			break; // a restart request seconds after start is a crash loop, handled below
+		default:
+			break;
+	}
+	handleCrash(ranMs);
+}
+
+function handleCrash(ranMs) {
+	totalCrashes++;
+	failStreak = ranMs >= STABLE_AFTER_MS ? 1 : failStreak + 1;
+	let delay = ranMs >= STABLE_AFTER_MS
+		? QUICK_RESTART_MS
+		: Math.min(MAX_BACKOFF_MS, BASE_BACKOFF_MS * 2 ** (failStreak - 1));
+
+	if (mode === "main" && wolfAvailable() && failStreak >= WOLF_AFTER && ranMs < STABLE_AFTER_MS) {
+		enterWolf(`${failStreak} quick crashes in a row`);
+		failStreak = 0;
+		delay = QUICK_RESTART_MS;
+	}
+	log("AUTO_HEAL", `Bot ended unexpectedly (quick-crash streak ${failStreak}). Server stays ON.`);
+	scheduleRestart(delay);
+}
+
+function handleCannotRun(targetFile) {
+	if (mode === "main" && wolfAvailable()) {
+		enterWolf(`${targetFile} reported that it cannot run`);
+		failStreak = 0;
+		return scheduleRestart(QUICK_RESTART_MS);
+	}
+	log("ERROR", `${targetFile} cannot run and there is no other engine to use. Retrying with back-off.`);
+	if (mode === "wolf") { mode = "main"; leaveWolfTimer(); }
+	totalCrashes++;
+	failStreak++;
+	scheduleRestart(Math.min(MAX_BACKOFF_MS, BASE_BACKOFF_MS * 2 ** Math.min(failStreak, 8)));
+}
+
+function handleAccountSwitch() {
+	accountSwitches++;
+	failStreak = 0;
+	const t = Date.now();
+	switchTimes.push(t);
+	while (switchTimes.length && t - switchTimes[0] > 120000) switchTimes.shift();
+	const delay = switchTimes.length > 6 ? 10000 : QUICK_RESTART_MS; // loop guard
+	log("ACCOUNT", `Account changed or lost. Restarting on the next account in ${Math.round(delay / 1000)}s...`);
+	scheduleRestart(delay);
+}
+
+async function handleMissingPackage(ranMs) {
+	const t = Date.now();
+	while (npmTries.length && t - npmTries[0] > 10 * 60 * 1000) npmTries.shift();
+	npmTries.push(t);
+	if (npmTries.length > 3) {
+		log("INSTALL", "A package is still missing after 3 installs. Treating this as a crash.");
+		return handleCrash(ranMs);
+	}
+	scheduleRestart(60 * 60 * 1000); // placeholder timer so the watchdog does not start the bot during install
+	await runNpmInstall("A package is missing");
+	scheduleRestart(QUICK_RESTART_MS, true);
+}
+
+// All accounts failed: offline page + retry with back-off, or at once when a cookie file changes.
+function handleAllAccountsFailed() {
+	const prev = offline;
+	offline = {
+		since: prev ? prev.since : Date.now(),
+		attempt: prev ? prev.attempt + 1 : 0,
+		snapshot: accountSnapshot()
+	};
+	failStreak = 0;
+	const delay = OFFLINE_DELAYS_MS[Math.min(offline.attempt, OFFLINE_DELAYS_MS.length - 1)];
+	log("OFFLINE", `All accounts failed or are suspended. Offline page is live. Retry in ${Math.round(delay / 1000)}s, or instantly when you edit an account file.`);
+	startOfflinePoll();
+	scheduleRestart(delay, true);
+}
+
+function startOfflinePoll() {
+	if (offlinePoll) return;
+	offlinePoll = setInterval(() => {
+		if (!offline) return stopOfflinePoll();
+		if (isChildRunning() || installing) return;
+		const snap = accountSnapshot();
+		if (snap !== offline.snapshot) {
+			log("OFFLINE", "An account file was changed. Retrying now...");
+			offline.snapshot = snap;
+			offline.attempt = -1;
+			scheduleRestart(0, true);
+		}
+	}, ACCOUNT_POLL_MS);
+}
+
+function stopOfflinePoll() {
+	if (offlinePoll) { clearInterval(offlinePoll); offlinePoll = null; }
+}
+
+function scheduleRestart(delay, force = false) {
+	if (shuttingDown) return;
+	if (restartTimer) {
+		if (!force) return;
+		clearTimeout(restartTimer);
+	}
+	if (delay > 0) log("RECOVERY", `Starting again in ${Math.round(delay / 1000)}s...`);
 	restartTimer = setTimeout(() => {
 		restartTimer = null;
 		startBot();
 	}, delay);
 }
 
+// ───────────────────────────── watchdogs ───────────────────────────── //
+
+// Nothing running and nothing scheduled: start it.
 setInterval(() => {
-	if (!shuttingDown && !isChildRunning() && !restartTimer && !starting) {
-		log("⚠️", "WATCHDOG", "Process inactive! Triggering auto-recovery...");
+	if (!shuttingDown && !isChildRunning() && !restartTimer && !starting && !installing) {
+		log("WATCHDOG", "Bot is inactive. Forcing start...");
 		startBot();
 	}
 }, 10000);
 
+// Frozen bot (event loop blocked): the heartbeat stops, so kill it and let recovery restart it.
+setInterval(() => {
+	const t = Date.now();
+	const gap = t - lastTick;
+	lastTick = t;
+	if (gap > Math.max(45000, FREEZE_CHECK_MS * 3)) { // this machine was suspended (laptop sleep, phone doze): do not blame the bot
+		lastHeartbeat = t;
+		return;
+	}
+	if (isChildRunning() && gotHeartbeat && t - lastHeartbeat > HEARTBEAT_TIMEOUT_MS) {
+		log("FREEZE", `No heartbeat for ${Math.round((t - lastHeartbeat) / 1000)}s. Killing the frozen bot...`);
+		lastHeartbeat = t;
+		try { child.kill("SIGKILL"); } catch (e) { /* ignore */ }
+	}
+}, FREEZE_CHECK_MS);
+
+// A status line in the logs every 10 minutes.
+setInterval(() => {
+	log("STATUS", `${stateName()} | engine ${mode === "wolf" ? WOLF_FILE : MAIN_FILE} | account ${activeAccount || "-"} | launches ${launchCount} | switches ${accountSwitches} | up ${formatUptime(process.uptime())} | ${Math.round(process.memoryUsage().rss / 1048576)}MB`);
+}, 10 * 60 * 1000);
+
+// Keep-awake ping for free hosts that sleep without incoming traffic (Render free, Replit).
+function selfUrl() {
+	if (process.env.ALIYA_SELF_URL) return process.env.ALIYA_SELF_URL;
+	if (process.env.RENDER_EXTERNAL_URL) return process.env.RENDER_EXTERNAL_URL;
+	if (process.env.RAILWAY_PUBLIC_DOMAIN) return `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`;
+	if (process.env.REPLIT_DEV_DOMAIN) return `https://${process.env.REPLIT_DEV_DOMAIN}`;
+	if (process.env.REPL_SLUG && process.env.REPL_OWNER) return `https://${process.env.REPL_SLUG}.${process.env.REPL_OWNER}.repl.co`;
+	return null;
+}
+
+function startSelfPing() {
+	const url = selfUrl();
+	if (!url || process.env.ALIYA_SELF_PING === "0" || !useProxy) return;
+	const target = url.replace(/\/+$/, "") + "/health";
+	const client = target.startsWith("https") ? https : http;
+	log("KEEP_AWAKE", `Self-ping every 4 minutes: ${target}`);
+	setInterval(() => {
+		try {
+			const req = client.get(target, { timeout: 10000 }, res => res.resume());
+			req.on("timeout", () => req.destroy());
+			req.on("error", () => { /* host asleep or offline: ignore */ });
+		}
+		catch (e) { /* ignore */ }
+	}, 4 * 60 * 1000);
+}
+
+// ───────────────────────────── shutdown ───────────────────────────── //
+
 function shutdown(signal) {
 	if (shuttingDown) return;
 	shuttingDown = true;
+	log("SHUTDOWN", `${signal} received. Cleaning up...`);
 	if (restartTimer) clearTimeout(restartTimer);
-	if (publicServer) try { publicServer.close(); } catch (e) {}
+	leaveWolfTimer();
+	stopOfflinePoll();
+	if (publicServer) try { publicServer.close(); } catch (e) { /* ignore */ }
+
 	if (isChildRunning()) {
-		try { child.kill("SIGTERM"); } catch (e) {}
-		setTimeout(() => process.exit(0), 2500);
-	} else process.exit(0);
+		const c = child;
+		try { c.kill("SIGTERM"); } catch (e) { /* ignore */ }
+		const hard = setTimeout(() => {
+			try { c.kill("SIGKILL"); } catch (e) { /* ignore */ }
+			process.exit(0);
+		}, 5000);
+		c.once("exit", () => { clearTimeout(hard); process.exit(0); });
+	}
+	else process.exit(0);
 }
 
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
-process.on("uncaughtException", err => log("❌", "SUPERVISOR_ERR", err && err.message));
-process.on("unhandledRejection", err => log("⚠️", "SUPERVISOR_REJ", err && err.message ? err.message : String(err)));
+process.on("SIGHUP", () => log("SIGNAL", "Terminal closed (SIGHUP) - ignoring, bot keeps running."));
+process.on("uncaughtException", err => log("UNCAUGHT", err && err.message));
+process.on("unhandledRejection", err => log("UNHANDLED", err && err.message ? err.message : String(err)));
+process.stdout.on("error", () => { /* EPIPE when the terminal closes */ });
+process.stderr.on("error", () => { /* same */ });
+
+// ───────────────────────────── go! ───────────────────────────── //
 
 (async () => {
-	log("🧩", "BOOT", `Node ${process.version} | ${process.platform}/${process.arch}`);
-	prepareFiles();
+	log("ENV", `Node ${process.version} | ${process.platform}/${process.arch} | memory limit ${MEM_LIMIT_MB}MB`);
 	if (useProxy) {
 		try {
 			await openPublicServer();
-		} catch (err) {
+		}
+		catch (err) {
+			log("SERVER", `Could not open public server: ${err.message}. Falling back to a bot-owned port.`);
 			useProxy = false;
+			publicServer = null;
 			publicPort = REQUESTED_PORT;
 		}
 	}
+	else publicPort = REQUESTED_PORT; // proxy off: the bot opens PORT itself
+	startSelfPing();
 	await ensureDependencies();
 	startBot();
 })();
-		
