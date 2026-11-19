@@ -35,8 +35,8 @@ module.exports = {
       slotLimit = { date: today, count: 0 };
     }
 
-    if (slotLimit.count >= 800) {
-      return message.reply(">🎀 ( 𝐋𝐢𝐦𝐢𝐭 𝐑𝐞𝐚𝐜𝐡𝐞𝐝 )\n━━━━━━━━━━━━━━━━━━\n🚫 | 𝐁𝐚𝐛𝐲, 𝐲𝐨𝐮 𝐡𝐚𝐯𝐞 𝐟𝐢𝐧𝐢𝐬𝐡𝐞𝐝 𝐲𝐨𝐮𝐫 𝟖𝟎𝟎 𝐬𝐩𝐢𝐧𝐬!\n✨ | 𝐒𝐥𝐨𝐭 𝐢𝐬 𝐧𝐨𝐰 𝐜𝐥𝐨𝐬𝐞𝐝 𝐟𝐨𝐫 𝐲𝐨𝐮 𝐮𝐧𝐭𝐢𝐥 𝐭𝐨𝐦𝐨𝐫𝐫𝐨𝐰.");
+    if (slotLimit.count >= 40) {
+      return message.reply(">🎀 ( 𝐋𝐢𝐦𝐢𝐭 𝐑𝐞𝐚𝐜𝐡𝐞𝐝 )\n━━━━━━━━━━━━━━━━━━\n🚫 | 𝐁𝐚𝐛𝐲, 𝐲𝐨𝐮 𝐡𝐚𝐯𝐞 𝐟𝐢𝐧𝐢𝐬𝐡𝐞𝐝 𝐲𝐨𝐮𝐫 𝟒𝟎 𝐬𝐩𝐢𝐧𝐬!\n✨ | 𝐒𝐥𝐨𝐭 𝐢𝐬 𝐧𝐨𝐰 𝐜𝐥𝐨𝐬𝐞𝐝 𝐟𝐨𝐫 𝐲𝐨𝐮 𝐮𝐧𝐭𝐢𝐥 𝐭𝐨𝐦𝐨𝐫𝐫𝐨𝐰.");
     }
 
     // 4. Advanced Slot Logic (Win 23%, Loss 77%)
