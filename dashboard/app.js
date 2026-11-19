@@ -3,6 +3,7 @@ const app = express();
 const fileUpload = require("express-fileupload");
 const rateLimit = require("express-rate-limit");
 const fs = require("fs-extra");
+const path = require("path");
 const session = require("express-session");
 const eta = require("eta");
 const bodyParser = require("body-parser");
@@ -11,7 +12,7 @@ const nodemailer = require("nodemailer");
 const cookieParser = require("cookie-parser");
 const flash = require("connect-flash");
 const Passport = require("passport");
-const bcrypt = require("bcrypt");
+const bcrypt = require("bcryptjs");
 const axios = require("axios");
 const mimeDB = require("mime-db");
 const http = require("http");
@@ -30,6 +31,11 @@ const audioExt = ["3gp", "aa", "aac", "aax", "act", "aiff", "alac", "amr",
         "voc", "vox", "wav", "wma", "wv", "webm", "8svx", "cd"
 ];
 
+
+function getActiveAccountPath() {
+        const file = (global.GoatBot && global.GoatBot.activeAccountFile) || "account.txt";
+        return path.isAbsolute(file) ? file : path.join(process.cwd(), file);
+}
 
 module.exports = async (api) => {
         if (!api)
@@ -203,12 +209,13 @@ module.exports = async (api) => {
         });
 
         app.get("/stats", async (req, res) => {
-                let fcaVersion;
-                try {
-                        fcaVersion = require("fb-chat-api/package.json").version;
-                }
-                catch (e) {
-                        fcaVersion = "unknown";
+                let fcaVersion = "unknown";
+                for (const fcaPackage of ["ws3-fca", "fca-saim-x69x", "@dongdev/fca-unofficial", "fca-unofficial"]) {
+                        try {
+                                fcaVersion = require(fcaPackage + "/package.json").version;
+                                break;
+                        }
+                        catch (e) { /* try the next package */ }
                 }
 
                 const totalThread = (await threadsData.getAll()).filter(t => t.threadID.toString().length > 15).length;
@@ -255,7 +262,7 @@ module.exports = async (api) => {
                                 message: getText("app", "notFoundFbstate")
                         });
 
-                fs.writeFileSync(process.cwd() + (process.env.NODE_ENV == "production" || process.env.NODE_ENV == "development" ? "/account.dev.txt" : "/account.txt"), fbstate);
+                fs.writeFileSync(getActiveAccountPath(), fbstate);
                 res.send({
                         status: "success",
                         message: getText("app", "changedFbstateSuccess")
@@ -268,9 +275,12 @@ module.exports = async (api) => {
         app.get("/uptime", global.responseUptimeCurrent);
 
         app.get("/changefbstate", isAuthenticated, isVeryfiUserIDFacebook, isAdmin, (req, res) => {
-                res.render("changeFbstate", {
-                        currentFbstate: fs.readFileSync(process.cwd() + (process.env.NODE_ENV == "production" || process.env.NODE_ENV == "development" ? "/account.dev.txt" : "/account.txt"), "utf8")
-                });
+                let currentFbstate = "";
+                try {
+                        currentFbstate = fs.readFileSync(getActiveAccountPath(), "utf8");
+                }
+                catch (e) { /* account file may not exist yet */ }
+                res.render("changeFbstate", { currentFbstate });
         });
 
         app.use("/register", registerRoute);
