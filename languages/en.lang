@@ -3,6 +3,7 @@ Goat.newVersionDetected=🌸 𝐔𝐩𝐝𝐚𝐭𝐞 ┊ You are on v%1, latest
 Goat.autoRestart1=🌸 Auto restart in %1
 Goat.autoRestart2=🌸 Auto restart by cron job: %1
 Goat.googleApiTokenExpired=❌ Google API refresh token expired, get a new one: https://developers.google.com/oauthplayground/
+Goat.googleApiRefreshTokenExpired=❌ Google API refresh token expired, get a new one: https://developers.google.com/oauthplayground/
 
 # bot/login/login.js
 login.currentlyLogged=🌸 Logging in...
@@ -56,6 +57,9 @@ login.listenMqttClose=🌸 ListenMQTT closed
 login.listenMqttCloseByUser=🌸 ListenMQTT closed by user
 login.retryCheckLiveCookie=🌸 Rechecking cookie... %1
 login.startBotSuccess=✨ 𝐀𝐥𝐢𝐲𝐚 𝐁𝐨𝐭 𝐢𝐬 𝐎𝐧𝐥𝐢𝐧𝐞 & 𝐑𝐞𝐚𝐝𝐲
+login.callBackError=❌ Listener error
+login.userBanned=🚫 You are banned from using Aliya Bot
+login.runBot=✨ 𝐀𝐥𝐢𝐲𝐚 𝐎𝐟𝐟𝐢𝐜𝐢𝐚𝐥 𝐕𝟒 𝐢𝐬 𝐫𝐮𝐧𝐧𝐢𝐧𝐠
 
 version.tooOldVersion=❌ Your bot is too old · update: %1
 

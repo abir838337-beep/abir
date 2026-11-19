@@ -3,6 +3,7 @@ Goat.newVersionDetected=🌸 𝐔𝐩𝐝𝐚𝐭𝐞 ┊ তুমি v%1 এ �
 Goat.autoRestart1=🌸 %1 পরে বট অটো রিস্টার্ট হবে
 Goat.autoRestart2=🌸 ক্রন জবে অটো রিস্টার্ট হবে: %1
 Goat.googleApiTokenExpired=❌ Google API টোকেনের মেয়াদ শেষ, নতুন নাও: https://developers.google.com/oauthplayground/
+Goat.googleApiRefreshTokenExpired=❌ Google API রিফ্রেশ টোকেনের মেয়াদ শেষ, নতুন নাও: https://developers.google.com/oauthplayground/
 
 # bot/login/login.js
 login.currentlyLogged=🌸 লগইন হচ্ছে...
@@ -56,6 +57,9 @@ login.listenMqttClose=🌸 ListenMQTT বন্ধ হয়েছে
 login.listenMqttCloseByUser=🌸 ইউজার ListenMQTT বন্ধ করেছে
 login.retryCheckLiveCookie=🌸 কুকি আবার চেক হচ্ছে... %1
 login.startBotSuccess=✨ 𝐀𝐥𝐢𝐲𝐚 𝐁𝐨𝐭 অনলাইন, সব রেডি
+login.callBackError=❌ লিসেনারে সমস্যা হয়েছে
+login.userBanned=🚫 তোমাকে Aliya Bot ব্যবহার থেকে ব্যান করা হয়েছে
+login.runBot=✨ 𝐀𝐥𝐢𝐲𝐚 𝐎𝐟𝐟𝐢𝐜𝐢𝐚𝐥 𝐕𝟒 চালু হয়েছে
 
 version.tooOldVersion=❌ তোমার বট অনেক পুরোনো · আপডেট করো: %1
 
