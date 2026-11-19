@@ -1,6 +1,8 @@
 const fs = require("fs-extra");
 const nullAndUndefined = [undefined, null];
 const leven = require('leven');
+const typing = require("./typingIndicator.js");
+const { createGetText2 } = require("./commandLanguage.js");
 
 // ---- Concurrency helpers (so many groups can be handled at the same time) ----
 // Dedupe simultaneous creation of the same user/thread record
@@ -205,25 +207,6 @@ function isBannedOrOnlyAdmin(userData, threadData, senderID, threadID, isGroup, 
 	return false;
 }
 
-function createGetText2(langCode, pathCustomLang, prefix, command) {
-	const commandType = command.config.countDown ? "command" : "command event";
-	const commandName = command.config.name;
-	let customLang = {};
-	let getText2 = () => { };
-	if (fs.existsSync(pathCustomLang))
-		customLang = require(pathCustomLang)[commandName]?.text || {};
-	if (command.langs || customLang || {}) {
-		getText2 = function (key, ...args) {
-			let lang = command.langs?.[langCode]?.[key] || customLang[key] || "";
-			lang = replaceShortcutInLang(lang, prefix, commandName);
-			for (let i = args.length - 1; i >= 0; i--)
-				lang = lang.replace(new RegExp(`%${i + 1}`, "g"), args[i]);
-			return lang || `❌ Can't find text on language "${langCode}" for ${commandType} "${commandName}" with key "${key}"`;
-		};
-	}
-	return getText2;
-}
-
 module.exports = function (api, threadModel, userModel, dashBoardModel, globalModel, usersData, threadsData, dashBoardData, globalData) {
 	return async function (event, message) {
 
@@ -238,6 +221,17 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
 		if (!threadID) return;
 
 		const senderID = event.userID || event.senderID || event.author;
+
+		if (usersData && typeof usersData.get === "function") global.dailyUsersData = usersData;
+
+		if ((event.type === "message" || event.type === "message_reply") && senderID) {
+			try {
+				let botID = null;
+				try { botID = api.getCurrentUserID && api.getCurrentUserID(); } catch (e) { }
+				if (global.dailyMessageTracker && String(senderID) !== String(botID))
+					global.dailyMessageTracker(senderID);
+			} catch (e) { }
+		}
 
 		let threadData = global.db.allThreadData.find(t => t.threadID == threadID);
 		let userData = global.db.allUserData.find(u => u.userID == senderID);
@@ -409,8 +403,13 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
 			const time = getTime("DD/MM/YYYY HH:mm:ss");
 			isUserCallCommand = true;
 
+			const typingHandle = typing.start(api, threadID, "command");
 			try {
 				trackAnalytics(globalData, commandName);
+				try {
+					if (typeof global.dailyTaskTracker === "function") global.dailyTaskTracker(senderID, commandName);
+				}
+				catch (e) { /* task tracking must never break a command */ }
 
 				createMessageSyntaxError(commandName);
 				const getText2 = createGetText2(langCode, `${process.cwd()}/languages/cmds/${langCode}.js`, prefix, command);
@@ -426,6 +425,8 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
 			} catch (err) {
 				log.err("CALL COMMAND", `An error occurred when calling the command ${commandName}`, err);
 				return await message.reply(utils.getText({ lang: langCode, head: "handlerEvents" }, "errorOccurred", time, commandName, removeHomeDir(err.stack ? err.stack.split("\n").slice(0, 5).join("\n") : JSON.stringify(err, null, 2))));
+			} finally {
+				typingHandle.stop();
 			}
 		}
 
@@ -575,6 +576,7 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
 
 			const getText2 = createGetText2(langCode, `${process.cwd()}/languages/cmds/${langCode}.js`, prefix, command);
 			const time = getTime("DD/MM/YYYY HH:mm:ss");
+			const typingHandle = typing.start(api, threadID, "reply");
 			try {
 				const args = body ? body.split(/ +/) : [];
 				createMessageSyntaxError(commandName);
@@ -590,6 +592,8 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
 				log.info("onReply", `${commandName} | ${senderName} | ${senderID} | ${threadID} | ${args.join(" ")}`);
 			} catch (err) {
 				log.err("onReply", `An error occurred when calling onReply ${commandName}`, err);
+			} finally {
+				typingHandle.stop();
 			}
 		}
 
@@ -608,6 +612,7 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
 			if (needRole > role) return;
 
 			const time = getTime("DD/MM/YYYY HH:mm:ss");
+			const typingHandle = typing.start(api, threadID, "reaction");
 			try {
 				const getText2 = createGetText2(langCode, `${process.cwd()}/languages/cmds/${langCode}.js`, prefix, command);
 				const args = [];
@@ -624,6 +629,8 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
 				log.info("onReaction", `${commandName} | ${senderName} | ${senderID} | ${threadID} | ${event.reaction}`);
 			} catch (err) {
 				log.err("onReaction", `An error occurred when calling onReaction ${commandName}`, err);
+			} finally {
+				typingHandle.stop();
 			}
 		}
 		async function handlerEvent() {
@@ -695,23 +702,6 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
 		async function presence() {}
 		async function read_receipt() {}
 
-		// Functional Typing Indicator
-		async function typ() {
-			try {
-				if (typeof api.sendTypingIndicator === "function") {
-					api.sendTypingIndicator(threadID, (err) => {
-						if (err) log.err("TYPING_INDICATOR", err);
-					});
-				}
-			} catch (e) {
-				// Silent catch
-			}
-		}
-
-		if (body) {
-			typ();
-		}
-
 		return {
 			onAnyEvent,
 			onFirstChat,
@@ -722,8 +712,7 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
 			onEvent,
 			handlerEvent,
 			presence,
-			read_receipt,
-			typ
+			read_receipt
 		};
 	};
 };
