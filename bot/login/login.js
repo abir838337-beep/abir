@@ -596,8 +596,9 @@ async function startBot() {
 		if (notices.length) {
 			const adminId = (global.GoatBot.config.adminBot || [])[0];
 			if (adminId) {
-				const lines = notices.map(n => `• ${n.file} → ${n.kind === "suspended" ? "SUSPENDED / LOCKED" : "LOGGED OUT"}`);
-				const msg = `⚠️ Account alert\n${lines.join("\n")}\n\n✅ Bot is now running on: ${activeFile}\nUse "account list" to see all accounts.`;
+				const lines = notices.map(n => `• ${pool.short(n.text, 120)}`);
+				const prefix = (global.GoatBot.config && global.GoatBot.config.prefix) || "/";
+				const msg = `Account alert\n${lines.join("\n")}\n\nBot is now running on: ${activeFile}\nUse "${prefix}account status" to see all 5 accounts.`;
 				setTimeout(() => { try { api.sendMessage(msg, adminId, () => { }); } catch (e) { /* admin not reachable */ } }, 8000);
 			}
 		}

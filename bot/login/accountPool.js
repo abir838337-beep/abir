@@ -1,12 +1,15 @@
 /**
- * @author Mr.king x Aliya
- * Account pool for Wolf.js (and any other engine that wants to log in by itself).
+ * ============================================================================
+ * ALIYA OFFICIAL V4 - ACCOUNT POOL (shared by Aliya.js, Wolf.js and commands)
+ * Maintained by Mr.king
  *
- * It is a thin layer on top of ./accountManager.js, so Aliya.js (through index.js) and Wolf.js always
- * share ONE truth about the five cookie files (data/accounts.json): when one engine finds an account dead,
- * the other one skips it too.
+ * Five slots, always in this order unless an admin forces one:
+ *   account.txt  account2.txt  account3.txt  account4.txt  account5.txt
  *
- *   account.txt · account2.txt · account3.txt · account4.txt · account5.txt
+ * A failed login marks the slot with a short cooldown. On the next start the
+ * healthy slots are tried first and the resting ones are still tried as a last
+ * resort, so the bot never gives up while at least one cookie is usable.
+ * ============================================================================
  */
 
 "use strict";
@@ -17,16 +20,14 @@ const manager = require("./accountManager.js");
 
 const ROOT = path.join(__dirname, "..", "..");
 const FILES = Array.from({ length: manager.SLOTS }, (_, i) => path.basename(manager.slotFile(i + 1)));
-
-const slotOf = file => FILES.indexOf(path.basename(String(file || ""))) + 1; // 0 = not one of ours
 const notices = [];
 
 function note(text) {
-	notices.push({ at: Date.now(), text });
-	if (notices.length > 20) notices.shift();
+	notices.push({ at: Date.now(), text: manager.sanitize(text, 160) });
+	if (notices.length > 30) notices.shift();
 }
 
-const short = (s, n = 90) => String(s === undefined || s === null ? "" : s).replace(/\s+/g, " ").slice(0, n);
+const short = (s, n = 90) => manager.sanitize(s, n);
 const errText = e => manager.errorText(e) || String(e);
 
 function classify(err) {
@@ -39,13 +40,22 @@ function classify(err) {
 	return { kind, detail, text };
 }
 
+function slotOf(file) {
+	const name = path.basename(String(file || "")).trim();
+	let n = FILES.indexOf(name) + 1;
+	if (n) return n;
+	n = Number(String(file || "").replace(/^account/i, "").replace(/\.txt$/i, ""));
+	return manager.validSlot(n) ? n : 0;
+}
+
 function readText(file) {
-	try { return fs.readFileSync(manager.slotFile(slotOf(file)), "utf8").trim(); } catch (e) { return ""; }
+	const n = slotOf(file);
+	return manager.readSlotText(n || 1);
 }
 
 function filePath(file) {
 	const n = slotOf(file);
-	return n ? manager.slotFile(n) : path.join(ROOT, path.basename(String(file)));
+	return n ? manager.slotFile(n) : path.join(ROOT, path.basename(String(file || "account.txt")));
 }
 
 function hashText(text) {
@@ -55,19 +65,23 @@ function hashText(text) {
 	return `${s.length}:${h >>> 0}`;
 }
 
+// Forced slot first, then account.txt .. account5.txt. Resting accounts come
+// last but are never removed: "try until one logs in" is the whole point.
 function candidates() {
 	const state = manager.loadState();
 	const usable = [];
 	const deadOnes = [];
-	const order = [];
-	if (manager.validSlot(state.forced)) order.push(state.forced);
+	const forced = manager.validSlot(state.forced) ? Number(state.forced) : 0;
+	const order = forced ? [forced] : [];
 	for (let n = 1; n <= manager.SLOTS; n++) if (!order.includes(n)) order.push(n);
+
 	for (const n of order) {
 		const a = manager.inspect(n, state);
 		if (!a.valid) continue;
-		(a.cooldownUntil && !a.forced ? deadOnes : usable).push(FILES[n - 1]);
+		if (a.cooldownLeft > 0 && !a.forced) deadOnes.push(FILES[n - 1]);
+		else usable.push(FILES[n - 1]);
 	}
-	return { usable, deadOnes };
+	return { usable, deadOnes, forced: forced ? FILES[forced - 1] : null };
 }
 
 function cookie(key, value) {
@@ -75,32 +89,34 @@ function cookie(key, value) {
 	return { key, value, domain: "facebook.com", path: "/", hostOnly: true, creation: now, lastAccessed: now };
 }
 
+// Cookie string, Netscape TSV, appState array or { cookies: [...] } -> fca appState
 async function parse(raw, opts = {}) {
 	const text = String(raw || "").replace(/^\uFEFF/, "").trim();
 	if (!text) throw new Error("cookie file is empty");
-	if (text.startsWith("EAAAA")) throw new Error("access-token files need the main engine (Aliya.js)");
+	if (/^EAAAA[A-Za-z0-9_-]+/.test(text)) throw new Error("access-token files are handled by the main engine only, use a cookie file here");
 
 	let appState;
 	if (text[0] === "[" || text[0] === "{") {
 		let data;
-		try { data = JSON.parse(text); } catch (e) { throw new Error("not valid JSON"); }
+		try { data = JSON.parse(text); } catch (e) { throw new Error("cookie file is not valid JSON"); }
 		if (!Array.isArray(data) && data && Array.isArray(data.cookies)) data = data.cookies;
-		if (!Array.isArray(data)) throw new Error("JSON must be a cookie array");
+		if (!Array.isArray(data)) throw new Error("JSON must be an array of cookies or an object with a cookies array");
 		appState = data
 			.filter(c => c && typeof c === "object" && (c.key || c.name))
 			.map(c => ({ ...c, key: c.key || c.name, value: String(c.value === undefined || c.value === null ? "" : c.value) }));
 	}
-	else if (/c_user\s*=/.test(text)) {
+	else if (/\bc_user\s*=/.test(text)) {
 		appState = text.split(/[;\n]/).map(p => {
 			const i = p.indexOf("=");
 			return i > 0 ? cookie(p.slice(0, i).trim(), p.slice(i + 1).trim()) : null;
 		}).filter(Boolean);
 	}
 	else if (text.includes("\t")) {
-		appState = text.split("\n").map(l => l.split("\t")).filter(p => p.length >= 7 && !String(p[0]).startsWith("#"))
+		appState = text.split(/\r?\n/).map(l => l.split("\t"))
+			.filter(p => p.length >= 7 && !String(p[0]).startsWith("#"))
 			.map(p => cookie(p[5].trim(), p[6].trim()));
 	}
-	else throw new Error("unknown cookie format");
+	else throw new Error("unknown cookie format (use a cookie string, Netscape TSV or appState JSON)");
 
 	if (!appState.some(c => c.key === "c_user")) throw new Error("c_user cookie is missing");
 	if (!appState.some(c => c.key === "xs")) throw new Error("xs cookie is missing");
@@ -125,6 +141,7 @@ function writeText(file, text) {
 	const target = filePath(file);
 	const tmp = `${target}.${process.pid}.tmp`;
 	try {
+		fs.mkdirSync(path.dirname(target), { recursive: true });
 		fs.writeFileSync(tmp, String(text).trim() + "\n", { mode: 0o600 });
 		fs.renameSync(tmp, target);
 		return true;
@@ -136,25 +153,38 @@ function writeText(file, text) {
 }
 
 function loadFca() {
-	const names = [path.join(ROOT, "fb-chat-api"), "ws3-fca", "@dongdev/fca-unofficial", "fca-unofficial"];
+	const names = [
+		path.join(ROOT, "fb-chat-api"),
+		"ws3-fca",
+		"fca-saim-x69x",
+		"@dongdev/fca-unofficial",
+		"fca-unofficial"
+	];
 	for (const name of names) {
 		try {
 			const m = require(name);
 			const fn = typeof m === "function" ? m : (m && (m.default || m.login));
 			if (typeof fn === "function") return fn;
 		}
-		catch (e) { /* try the next one */ }
+		catch (e) { /* try the next library */ }
 	}
 	return null;
 }
 
 function tryLogin(appState, opts, ms) {
 	return new Promise(resolve => {
-		const login = loadFca();
-		if (!login) return resolve({ ok: false, fatal: true, error: "no Facebook chat library installed (npm install)" });
+		let login = null;
+		try { login = loadFca(); } catch (e) { login = null; }
+		if (!login) return resolve({ ok: false, fatal: true, error: "no Facebook chat library installed (run: npm install)" });
+
 		let done = false;
-		const finish = result => { if (!done) { done = true; clearTimeout(timer); resolve(result); } };
-		const timer = setTimeout(() => finish({ ok: false, error: "login timed out (network)" }), ms || 45000);
+		const timer = setTimeout(() => finish({ ok: false, error: "login timed out (network)" }), Number(ms) || 45000);
+		function finish(result) {
+			if (done) return;
+			done = true;
+			clearTimeout(timer);
+			resolve(result);
+		}
 		try {
 			login({ appState }, { ...(opts || {}) }, (err, api) => {
 				if (err || !api) finish({ ok: false, error: errText(err || "login returned no api") });
@@ -167,12 +197,14 @@ function tryLogin(appState, opts, ms) {
 	});
 }
 
+// ─────────────────────── bookkeeping / admin control ───────────────────────
+
 function markOk(file) {
 	const n = slotOf(file);
 	if (!n) return;
 	const state = manager.loadState();
 	const rec = state.slots[n];
-	if (rec && manager.COOLDOWN[rec.status]) manager.markActive(n);
+	if (rec && (rec.status !== "active" || rec.cooldownUntil)) manager.markActive(n);
 }
 
 function markDead(file, kind, text) {
@@ -181,7 +213,7 @@ function markDead(file, kind, text) {
 	let detail = manager.classifyError(text);
 	if (!manager.COOLDOWN[detail]) detail = kind === "suspended" ? "suspended" : "expired";
 	manager.markFail(n, detail, text);
-	note(`${file}: ${manager.LABEL[detail] || detail}`);
+	note(`${FILES[n - 1]}: ${manager.LABEL[detail] || detail}`);
 }
 
 function markFailed(file, text) {
@@ -199,20 +231,49 @@ function clearPreferred() {
 	manager.setForced(null);
 }
 
-const STATUS_TEXT = {
-	active: "ACTIVE (IN USE)", ok: "AVAILABLE (STANDBY)", untested: "AVAILABLE (STANDBY)",
-	expired: "LOGGED OUT / EXPIRED", twofa: "LOGGED OUT / EXPIRED",
-	checkpoint: "SUSPENDED / LOCKED", suspended: "SUSPENDED / LOCKED",
-	other: "FAILED", invalid: "INVALID FORMAT", empty: "EMPTY"
-};
+function switchTo(fileOrSlot) {
+	const named = slotOf(fileOrSlot);
+	const n = named || (manager.validSlot(fileOrSlot) ? Number(fileOrSlot) : 0);
+	if (!n || !manager.inspect(n).valid) return { ok: false, reason: "slot is empty or has no valid cookie" };
+	manager.setForced(n);
+	note(`${FILES[n - 1]}: forced switch requested`);
+	return { ok: true, slot: n, file: FILES[n - 1] };
+}
+
+function resetSlot(fileOrSlot) {
+	const n = slotOf(fileOrSlot) || (manager.validSlot(fileOrSlot) ? Number(fileOrSlot) : 0);
+	if (!n) return false;
+	return manager.resetSlot(n);
+}
+
+function nextAvailable(fileOrSlot) {
+	const current = slotOf(fileOrSlot) || (manager.validSlot(fileOrSlot) ? Number(fileOrSlot) : manager.loadState().active || 0);
+	const n = manager.nextAvailable(current);
+	return n ? { slot: n, file: FILES[n - 1] } : null;
+}
+
+const STATUS_TEXT = manager.LABEL;
 
 function statusTable({ active, results } = {}) {
+	const activeSlot = manager.validSlot(active) ? Number(active) : slotOf(active);
+	const state = manager.loadState();
 	return FILES.map((file, i) => {
-		const a = manager.inspect(i + 1);
+		const n = i + 1;
+		const a = manager.inspect(n, state);
 		const r = results && results[file];
-		if (active && file === active) return { file, status: STATUS_TEXT.active, detail: a.maskedID ? `id ${a.maskedID}` : "" };
-		if (r) return { file, status: r.status, detail: r.detail || "" };
-		return { file, status: STATUS_TEXT[a.status] || a.status, detail: short(a.reason || (a.maskedID ? `id ${a.maskedID}` : ""), 80) };
+		let row;
+		if (activeSlot === n) {
+			row = { slot: n, file, status: STATUS_TEXT.active, detail: a.maskedID ? `id ${a.maskedID}` : "" };
+		}
+		else if (r) {
+			row = { slot: n, file, status: r.status, detail: r.detail || "" };
+		}
+		else {
+			const d = manager.describe(n, state);
+			row = { slot: n, file, status: d.status, detail: d.detail, icon: d.icon };
+		}
+		row.icon = row.icon || (row.status.includes("ACTIVE") ? "🟢" : row.status.includes("AVAILABLE") ? "🔵" : row.status.includes("SUSPENDED") ? "🔴" : row.status.includes("EMPTY") ? "⚪" : "🟠");
+		return row;
 	});
 }
 
@@ -222,15 +283,22 @@ function toObject(table) {
 	return o;
 }
 
+function describeAll(active) {
+	const activeSlot = manager.validSlot(active) ? Number(active) : slotOf(active) || manager.loadState().active;
+	const state = manager.loadState();
+	return FILES.map((file, i) => ({ ...manager.describe(i + 1, state), active: activeSlot === i + 1 }));
+}
+
 function takeNotices() {
 	return notices.splice(0, notices.length);
 }
 
 module.exports = {
-	FILES, short, errText, classify,
+	FILES, SLOTS: manager.SLOTS, short, errText, classify,
 	seedFromEnv: manager.seedFromEnv,
 	readText, filePath, hashText, candidates, parse,
 	tryLogin, markOk, markDead, markFailed, setActive, clearPreferred,
 	statusTable, toObject, filterKeys, appStateIsHealthy, writeText, cookieString, takeNotices,
-	manager
+	switchTo, resetSlot, nextAvailable, describeAll,
+	getForced: manager.getForced, slotOf, manager
 };
