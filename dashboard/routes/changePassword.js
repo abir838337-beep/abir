@@ -1,4 +1,4 @@
-const bcrypt = require("bcrypt");
+const bcrypt = require("bcryptjs");
 const express = require("express");
 const router = express.Router();
 
@@ -14,8 +14,8 @@ module.exports = function ({ isAuthenticated, isVerifyRecaptcha, dashBoardData }
 					error: "CAPTCHA IS NOT VERIFIED",
 					message: "Captcha không hợp lệ"
 				});
-			const { oldassword, password, password_confirmation } = req.body;
-			if (!await bcrypt.compare(oldassword, req.user.password))
+			const { old_password, password, password_confirmation } = req.body;
+			if (!await bcrypt.compare(old_password, req.user.password))
 				return res.status(400).json({
 					status: "error",
 					error: "OLDASSWORD_IS_NOT_CORRECT",
