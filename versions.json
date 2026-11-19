@@ -80,4 +80,26 @@
     "scripts/cmds/amv.js": "added downloader"
   },
   "contributors": ["Mr.king"]
+  },
+  {
+    "version": "4.0.4",
+    "files": {
+      "scripts/cmds/daily.js": "Rebuilt daily command: 7 fixed tasks, image-only task card with progress bars, avatar and name, working claims; daily reward stays 5000 coin and 300 exp",
+      "scripts/cmds/dice.js": "Added dice game with roll alias and smart amount parsing",
+      "scripts/cmds/word.js": "Added word game with wordgame, wordle and unscramble aliases",
+      "scripts/cmds/slot.js": "Lowered the daily slot limit to 40 spins and updated the limit message",
+      "scripts/cmds/help.js": "Stopped typing from staying on by adding Google Drive request timeouts and download stream cleanup",
+      "bot/handler/typingIndicator.js": "Added a 60 second safety stop that clears typing on release",
+      "scripts/cmds/typing.js": "Added typing on, off and status command saved to config.json",
+      "scripts/cmds/shell.js": "Added shell typing on, off and status shortcut and manual entry",
+      "bot/handler/handlerEvents.js": "Track messages and commands for daily tasks and expose usersData to the tracker",
+      "Wolf.js": "Track messages for daily tasks in Wolf safe mode",
+      "package.json": "Alias canvas to @napi-rs/canvas for Termux and bump version to 4.0.4",
+      "package-lock.json": "Sync lockfile version and dependencies with package.json",
+      "termux-setup.sh": "Verify prebuilt canvas instead of running the node-gyp rebuild",
+      "TERMUX_INSTALL.md": "Document the canvas alias and Termux verification commands",
+      "UPGRADE_NOTES.md": "Document the typing controls, canvas packaging and daily task upgrade"
+    },
+    "contributors": ["Mr.king"]
   }
+]
