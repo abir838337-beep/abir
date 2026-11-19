@@ -70,7 +70,7 @@ module.exports = {
 
       const infoCard = 
         `╭──${platformName}──⬣\n` +
-        `│ 𝐌𝐚𝐝𝐞 𝐰𝐢𝐭𝐡 🤍 𝐛𝐲 --𝔐𝔯.𝔎𝔦𝔫𝔤\n` +
+        `│ 𝐌𝐚𝐝𝐞 𝐰𝐢𝐭𝐡 🤍 𝐛𝐲 ••𝔐𝔯.𝔎𝔦𝔫𝔤\n` +
         `╰────────────────⬣`;
 
       api.sendMessage(

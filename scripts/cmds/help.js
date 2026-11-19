@@ -29,8 +29,8 @@ function findCommand(name) {
 
 async function getRandomVideoPath() {
   try {
-    const response = await axios.get(`https://drive.google.com/embeddedfolderview?id=${FOLDER_ID}`).catch(async () => {
-      return await axios.get(`https://docs.google.com/uc?export=list&id=${FOLDER_ID}`);
+    const response = await axios.get(`https://drive.google.com/embeddedfolderview?id=${FOLDER_ID}`, { timeout: 12000 }).catch(async () => {
+      return await axios.get(`https://docs.google.com/uc?export=list&id=${FOLDER_ID}`, { timeout: 12000 });
     });
 
     const htmlData = response.data;
@@ -54,17 +54,33 @@ async function getRandomVideoPath() {
     const downloadStream = await axios({
       url: downloadUrl,
       method: "GET",
-      responseType: "stream"
+      responseType: "stream",
+      timeout: 20000
     });
 
     const writer = fs.createWriteStream(filePath);
     downloadStream.data.pipe(writer);
 
     return new Promise((resolve) => {
-      writer.on("finish", () => resolve(filePath));
+      let done = false;
+      const cleanUp = () => {
+        try { if (fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch (e) { }
+        try { if (downloadStream.data) downloadStream.data.destroy(); } catch (e) { }
+      };
+      const finish = value => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        resolve(value);
+      };
+      const timer = setTimeout(() => {
+        cleanUp();
+        finish(null);
+      }, 20000);
+      writer.on("finish", () => finish(filePath));
       writer.on("error", () => {
-        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-        resolve(null);
+        cleanUp();
+        finish(null);
       });
     });
   } catch (err) {

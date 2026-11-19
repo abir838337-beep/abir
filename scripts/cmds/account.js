@@ -1,116 +1,132 @@
 /**
  * ============================================================================
- * COMMAND: account (Multi-Account Switcher & Pool Status Inspector)
- * Usage:
- *   /account status          -> Shows all 5 accounts (active, standby, failed, suspended)
- *   /account switch <1-5>    -> Switches immediately to account.txt .. account5.txt
- *   /account next            -> Rotates to the next available standby account
+ * COMMAND: account  (Multi-account switcher and pool inspector)
+ *
+ *   <prefix>account status          all 5 slots: active, standby, resting, failed, suspended
+ *   <prefix>account switch <1-5>    force an immediate switch to that slot
+ *   <prefix>account next            switch to the next healthy standby slot
+ *   <prefix>account reset <1-5|all> clear a failure record so it is tried at once
+ *   <prefix>account auto            remove a forced switch, back to account.txt first
+ *
+ * Admin only. All replies are plain English.
  * ============================================================================
  */
 "use strict";
 
-const fs = require("fs-extra");
-const path = require("path");
+const pool = require("../../bot/login/accountPool.js");
 
-const ACCOUNT_FILES = ["account.txt", "account2.txt", "account3.txt", "account4.txt", "account5.txt"];
+function prefixOf(event) {
+	try {
+		if (global.utils && typeof global.utils.getPrefix === "function")
+			return global.utils.getPrefix(event && event.threadID) || global.GoatBot.config.prefix || "/";
+	} catch (e) { /* ignore */ }
+	return (global.GoatBot.config && global.GoatBot.config.prefix) || "/";
+}
+
+function restartSoon(reason) {
+	setTimeout(() => {
+		try {
+			if (process.send) process.exit(7); // 7 = request a fast engine restart / account switch
+			else if (global.GoatBot && typeof global.GoatBot.reLoginBot === "function") global.GoatBot.reLoginBot();
+		}
+		catch (e) { /* the supervisor will restart us anyway */ }
+	}, 1200);
+	return reason;
+}
 
 module.exports = {
 	config: {
 		name: "account",
-		aliases: ["acc", "switchacc", "accounts"],
-		version: "4.0.2",
+		aliases: ["acc", "switchacc", "accounts", "pool"],
+		version: "4.0.3",
 		author: "Mr.king",
 		countDown: 3,
-		role: 2, // Bot Admin only
+		role: 2,
 		description: {
-			en: "Manage and switch between the 5 multi-account slots (account.txt to account5.txt)",
-			vi: "Quản lý và chuyển đổi giữa 5 tài khoản bot"
+			en: "Show, switch, rotate or reset the 5 bot accounts (account.txt to account5.txt)",
+			vi: "Xem, đổi, luân chuyển hoặc đặt lại 5 tài khoản bot"
 		},
 		category: "owner",
 		guide: {
-			en: "{pn} status | {pn} switch <1-5> | {pn} next"
+			en: "{pn} status | {pn} switch <1-5> | {pn} next | {pn} reset <1-5|all> | {pn} auto"
 		}
 	},
 
-	onStart: async function ({ message, args }) {
-		const sub = (args[0] || "status").toLowerCase();
-		const root = process.cwd();
-		const pool = global.GoatBot.accountPoolStatus || {};
-		const currentActive = global.GoatBot.activeAccountFile || "account.txt";
+	onStart: async function ({ message, event, args }) {
+		const p = prefixOf(event);
+		const sub = String(args[0] || "status").toLowerCase();
+		const state = pool.manager.loadState();
+		const active = global.GoatBot.activeAccountFile || (state.active ? pool.FILES[state.active - 1] : null);
+		const reply = text => message.reply(text);
 
-		if (sub === "status" || sub === "list" || sub === "info") {
-			let report = "👑 𝗔𝗟𝗜𝗬𝗔 𝗠𝗨𝗟𝗧𝗜-𝗔𝗖𝗖𝗢𝗨𝗡𝗧 𝗣𝗢𝗢𝗟 𝗦𝗧𝗔𝗧𝗨𝗦\n";
-			report += "━━━━━━━━━━━━━━━━━━━━━━\n";
-			report += `🟢 𝗖𝘂𝗿𝗿𝗲𝗻𝘁𝗹𝘆 𝗔𝗰𝘁𝗶𝘃𝗲: ${currentActive}\n`;
-			report += `🆔 𝗕𝗼𝘁 𝗨𝗜𝗗: ${global.GoatBot.botID || "Unknown"}\n`;
-			report += "━━━━━━━━━━━━━━━━━━━━━━\n";
-
-			ACCOUNT_FILES.forEach((file, idx) => {
-				const filePath = path.join(root, file);
-				const exists = fs.existsSync(filePath);
-				const content = exists ? fs.readFileSync(filePath, "utf8").trim() : "";
-				const info = pool[file] || {
-					status: content.length > 10 ? "AVAILABLE (STANDBY)" : "EMPTY",
-					detail: content.length > 10 ? "Ready" : "No state"
-				};
-
-				let icon = "⚪";
-				if (file === currentActive) icon = "🟢";
-				else if (info.status.includes("AVAILABLE")) icon = "🔵";
-				else if (info.status.includes("SUSPENDED")) icon = "🔴";
-				else if (info.status.includes("FAIL") || info.status.includes("INVALID")) icon = "🟠";
-
-				report += `${idx + 1}. ${icon} ${file}\n   └ Status: ${info.status}\n   └ Info: ${info.detail}\n`;
-			});
-
-			report += "━━━━━━━━━━━━━━━━━━━━━━\n";
-			report += "💡 Tip: Use /account switch <1-5> or /account next";
-			return message.reply(report);
+		if (["status", "list", "info", ""].includes(sub)) {
+			const rows = pool.describeAll(active);
+			let out = "ALIYA ACCOUNT POOL STATUS\n";
+			out += "=============================\n";
+			out += `Active now : ${active || "none"}\n`;
+			out += `Engine     : ${global.GoatBot.isWolfMode ? "Wolf safe mode" : "Aliya main"}\n`;
+			out += `Bot UID    : ${global.GoatBot.botID || "unknown"}\n`;
+			out += `Forced slot: ${state.forced ? `${state.forced} (${pool.FILES[state.forced - 1]})` : "none (auto order)"}\n`;
+			out += "=============================\n";
+			for (const r of rows) {
+				out += `${r.slot}. ${r.icon} ${r.file}\n`;
+				out += `   status : ${r.status}\n`;
+				if (r.detail) out += `   info   : ${r.detail}\n`;
+			}
+			out += "=============================\n";
+			out += `Legend: green active | blue available | orange failed or expired | red suspended\n`;
+			out += `Commands: ${p}account switch <1-5> | ${p}account next | ${p}account reset <1-5|all> | ${p}account auto`;
+			return reply(out);
 		}
 
-		if (sub === "switch" || sub === "use") {
-			const slot = parseInt(args[1], 10);
-			if (isNaN(slot) || slot < 1 || slot > 5) {
-				return message.reply("⚠️ Please specify a valid account slot between 1 and 5.\nExample: /account switch 2");
+		if (["switch", "use", "set"].includes(sub)) {
+			const wanted = String(args[1] || "").trim();
+			const result = pool.switchTo(wanted);
+			if (!result.ok) {
+				const known = pool.FILES.map((f, i) => `${i + 1}=${f}`).join(", ");
+				return reply(`Cannot switch to "${wanted || "empty"}": ${result.reason}.\nSlots: ${known}`);
 			}
-			const targetFile = ACCOUNT_FILES[slot - 1];
-			const targetPath = path.join(root, targetFile);
-			if (!fs.existsSync(targetPath) || fs.readFileSync(targetPath, "utf8").trim().length < 10) {
-				return message.reply(`❌ Cannot switch: ${targetFile} is empty or missing! Add a valid cookie/appstate first.`);
-			}
-
-			fs.writeFileSync(path.join(root, ".preferred_account"), targetFile);
-			await message.reply(`🔄 Switching active bot account to [${targetFile}]...\n♻️ Restarting core now (takes ~3 seconds).`);
-			setTimeout(() => process.exit(2), 1200);
-			return;
+			await reply(`Switching to slot ${result.slot} (${result.file}).\nRestarting the engine now. The bot will be back in a few seconds.`);
+			return restartSoon("switch");
 		}
 
-		if (sub === "next" || sub === "rotate") {
-			const currentIdx = ACCOUNT_FILES.indexOf(currentActive);
-			let nextFile = null;
-			for (let offset = 1; offset <= 5; offset++) {
-				const candidate = ACCOUNT_FILES[(currentIdx + offset) % 5];
-				const p = path.join(root, candidate);
-				if (fs.existsSync(p) && fs.readFileSync(p, "utf8").trim().length > 10) {
-					const st = pool[candidate]?.status || "";
-					if (!st.includes("SUSPENDED") && !st.includes("FAIL")) {
-						nextFile = candidate;
-						break;
-					}
-				}
-			}
-
-			if (!nextFile || nextFile === currentActive) {
-				return message.reply("⚠️ No other healthy standby account found in account.txt through account5.txt!");
-			}
-
-			fs.writeFileSync(path.join(root, ".preferred_account"), nextFile);
-			await message.reply(`🔄 Rotating to next available account: [${nextFile}]...\n♻️ Restarting core now.`);
-			setTimeout(() => process.exit(2), 1200);
-			return;
+		if (["next", "rotate", "skip"].includes(sub)) {
+			const next = pool.nextAvailable(active);
+			if (!next) return reply("No other healthy account is available right now. Add a cookie or reset a slot first.");
+			const result = pool.switchTo(next.slot);
+			if (!result.ok) return reply(`Cannot switch to ${next.file}: ${result.reason}`);
+			await reply(`Rotating to slot ${next.slot} (${next.file}). Restarting now...`);
+			return restartSoon("rotate");
 		}
 
-		return message.reply("⚠️ Unknown option. Use:\n• /account status\n• /account switch <1-5>\n• /account next");
+		if (sub === "reset") {
+			const raw = String(args[1] || "").toLowerCase();
+			if (raw === "all") {
+				for (let n = 1; n <= pool.SLOTS; n++) pool.resetSlot(n);
+				await reply("All 5 slots were reset. Every account will be tried again on the next login.");
+				return restartSoon("reset all");
+			}
+			const n = pool.slotOf(raw) || (Number(raw) >= 1 && Number(raw) <= pool.SLOTS ? Number(raw) : 0);
+			if (!n) return reply(`Usage: ${p}account reset <1-5|all>`);
+			pool.resetSlot(n);
+			await reply(`Slot ${n} (${pool.FILES[n - 1]}) was reset and will be tried again immediately.`);
+			return restartSoon("reset");
+		}
+
+		if (sub === "auto" || sub === "clear") {
+			pool.clearPreferred();
+			await reply("Forced switch removed. Login order is back to account.txt first, then account2.txt to account5.txt.");
+			return restartSoon("auto");
+		}
+
+		return reply(
+			`Unknown option: ${sub}\n` +
+			`Usage:\n` +
+			`${p}account status\n` +
+			`${p}account switch <1-5>\n` +
+			`${p}account next\n` +
+			`${p}account reset <1-5|all>\n` +
+			`${p}account auto`
+		);
 	}
 };
-                              
