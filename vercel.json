@@ -2,17 +2,22 @@
   "version": 2,
   "builds": [
     {
-      "src": "index.js",
+      "src": "api/status.js",
       "use": "@vercel/node"
     }
   ],
   "routes": [
     {
+      "src": "/api/(.*)",
+      "dest": "api/status.js"
+    },
+    {
       "src": "/(.*)",
-      "dest": "index.js"
+      "dest": "api/status.js"
     }
   ],
   "env": {
-    "ALIYA_NO_PROXY": "1"
+    "ALIYA_SERVERLESS_STATUS": "1",
+    "NODE_NO_WARNINGS": "1"
   }
 }

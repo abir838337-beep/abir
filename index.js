@@ -28,9 +28,10 @@
 //   4  engine cannot run       -> switch to Wolf.js immediately
 //   5  account dead / switched -> restart in 1s on the next account
 //   6  npm package missing     -> npm install, then restart
+//   7  fast restart requested  -> restart in 0.5s (admin account switch / Wolf hand-back)
 //
-// IPC messages from the bot (all optional): HEARTBEAT, READY, POOL,
-// ACCOUNT_CONNECTED, ALL_ACCOUNTS_FAILED.
+// IPC messages from the bot (upper/lower case both accepted): HEARTBEAT, READY, POOL,
+// ACCOUNT_CONNECTED, ALL_ACCOUNTS_FAILED, ENGINE_HANDBACK, ACCOUNT_SWITCH_REQUEST.
 //
 // Optional environment variables:
 //   PORT                     public port (default 8080)
@@ -58,7 +59,15 @@ const path = require("path");
 const ROOT = __dirname;
 const MAIN_FILE = "Aliya.js";
 const WOLF_FILE = "Wolf.js";
-const SYNTAX_CHECK_FILES = [MAIN_FILE, path.join("bot", "login", "login.js")];
+const SYNTAX_CHECK_FILES = [
+	MAIN_FILE,
+	path.join("bot", "login", "login.js"),
+	path.join("bot", "handler", "handlerEvents.js"),
+	path.join("bot", "handler", "handlerAction.js"),
+	path.join("bot", "handler", "commandLanguage.js"),
+	path.join("bot", "handler", "typingIndicator.js"),
+	path.join("database", "controller", "index.js")
+];
 
 function envMs(name, fallback) {
 	const raw = process.env[name];
@@ -74,6 +83,9 @@ const BASE_BACKOFF_MS = envMs("ALIYA_BASE_BACKOFF_MS", 2000);
 const MAX_BACKOFF_MS = envMs("ALIYA_MAX_BACKOFF_MS", 300000);
 const STABLE_AFTER_MS = envMs("ALIYA_STABLE_AFTER_MS", 120000);
 const HEARTBEAT_TIMEOUT_MS = envMs("ALIYA_HEARTBEAT_TIMEOUT_MS", 120000);
+// A child that is alive but never sends READY is stuck in login/loading. Kill it
+// instead of leaving the server in "starting" forever.
+const STARTUP_TIMEOUT_MS = envMs("ALIYA_STARTUP_TIMEOUT_MS", 6 * 60 * 1000);
 const WOLF_AFTER = Math.max(1, envMs("ALIYA_WOLF_AFTER", 4));
 const WOLF_RETRY_MS = envMs("ALIYA_WOLF_RETRY_MS", 15 * 60 * 1000);
 const ACCOUNT_POLL_MS = envMs("ALIYA_ACCOUNT_POLL_MS", 5000);
@@ -120,6 +132,7 @@ let lastOfflineReason = "";
 let offline = null;              // null = fine, object = all accounts failed
 let wolfSince = 0;
 let lastExitInfo = "none yet";
+let nextRestartAt = 0;
 const switchTimes = [];
 const npmTries = [];
 
@@ -147,7 +160,9 @@ function fileOk(rel) {
 }
 
 function isChildRunning() {
-	return child !== null && child.exitCode === null && !child.killed;
+	// child.killed becomes true as soon as kill() is called, while the process may
+	// still be alive. exitCode/signalCode only change once it really exited.
+	return child !== null && child.exitCode === null && child.signalCode === null;
 }
 
 function getFreePort() {
@@ -283,19 +298,25 @@ function sendFallback(req, res) {
 }
 
 function handleHealth(res) {
-	res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+	res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store", "Access-Control-Allow-Origin": "*" });
 	res.end(JSON.stringify({
 		status: stateName(),
 		engine: mode === "wolf" ? WOLF_FILE : MAIN_FILE,
 		activeAccount,
 		accounts: sanitize(lastPool) || null,
 		offlineReason: offline && !ready ? (lastOfflineReason || "all accounts failed") : undefined,
+		nextRetryInSec: nextRestartAt ? Math.max(0, Math.ceil((nextRestartAt - Date.now()) / 1000)) : 0,
+		restartPending: nextRestartAt > Date.now(),
 		launches: launchCount,
 		crashes: totalCrashes,
 		accountSwitches,
 		lastExit: lastExitInfo,
 		uptime: formatUptime(process.uptime()),
-		memoryMB: Math.round(process.memoryUsage().rss / 1048576)
+		uptimeSec: Math.floor(process.uptime()),
+		memoryMB: Math.round(process.memoryUsage().rss / 1048576),
+		platform: `${process.platform}/${process.arch}`,
+		node: process.version,
+		version: "4.0.3"
 	}));
 }
 
@@ -344,7 +365,8 @@ function listenOn(server, port) {
 
 async function openPublicServer() {
 	publicServer = http.createServer((req, res) => {
-		if (req.url === "/health" || req.url === "/healthz") return handleHealth(res);
+		const cleanUrl = String(req.url || "").split("?")[0];
+		if (["/health", "/healthz", "/status.json", "/api/status"].includes(cleanUrl)) return handleHealth(res);
 		proxyHttp(req, res);
 	});
 	publicServer.keepAliveTimeout = 65000;
@@ -494,6 +516,7 @@ async function startBot() {
 	if (restartTimer) {
 		clearTimeout(restartTimer);
 		restartTimer = null;
+		nextRestartAt = 0;
 	}
 
 	starting = true;
@@ -555,7 +578,9 @@ async function startBot() {
 
 function handleChildMessage(m) {
 	if (!m || typeof m !== "object") return;
-	switch (m.type) {
+	// Aliya.js sends upper case, older Wolf builds sent lower case. Accept both.
+	const type = String(m.type || m.Type || "").toUpperCase();
+	switch (type) {
 		case "HEARTBEAT":
 			gotHeartbeat = true;
 			lastHeartbeat = Date.now();
@@ -580,6 +605,16 @@ function handleChildMessage(m) {
 			lastPool = sanitize(m.pool) || lastPool;
 			lastOfflineReason = typeof m.reason === "string" ? m.reason.slice(0, 200) : "all accounts failed";
 			if (!offline) offline = { since: Date.now(), attempt: -1, snapshot: accountSnapshot() };
+			break;
+		case "ENGINE_HANDBACK":
+			log("ENGINE", `${mode === "wolf" ? WOLF_FILE : MAIN_FILE} asked for the main engine.`);
+			if (mode === "wolf") requestSwitch("main");
+			else { switchTarget = mode; stopChild(); }
+			break;
+		case "ACCOUNT_SWITCH_REQUEST":
+			log("ACCOUNT", "Account switch requested by an admin. Restarting quickly...");
+			switchTarget = mode;
+			stopChild();
 			break;
 		default:
 			break;
@@ -613,6 +648,7 @@ function handleChildExit(targetFile, code, signal) {
 		case 4: return handleCannotRun(targetFile);
 		case 5: return handleAccountSwitch();
 		case 6: return handleMissingPackage(ranMs);
+		case 7: return handleQuickRestart(targetFile);
 		case 2:
 			if (ranMs >= 60000) {
 				failStreak = 0;
@@ -652,6 +688,18 @@ function handleCannotRun(targetFile) {
 	totalCrashes++;
 	failStreak++;
 	scheduleRestart(Math.min(MAX_BACKOFF_MS, BASE_BACKOFF_MS * 2 ** Math.min(failStreak, 8)));
+}
+
+// Code 7: the child asked for a fast restart (admin account switch, Wolf
+// handing back, manual rotate). It is a planned action, never a crash.
+function handleQuickRestart(targetFile) {
+	failStreak = 0;
+	log("RECOVERY", `${targetFile} requested a fast restart. Server stays ON.`);
+	if (mode === "wolf") {
+		mode = "main";
+		leaveWolfTimer();
+	}
+	return scheduleRestart(500, true);
 }
 
 function handleAccountSwitch() {
@@ -719,8 +767,10 @@ function scheduleRestart(delay, force = false) {
 		clearTimeout(restartTimer);
 	}
 	if (delay > 0) log("RECOVERY", `Starting again in ${Math.round(delay / 1000)}s...`);
+	nextRestartAt = Date.now() + delay;
 	restartTimer = setTimeout(() => {
 		restartTimer = null;
+		nextRestartAt = 0;
 		startBot();
 	}, delay);
 }
@@ -750,6 +800,16 @@ setInterval(() => {
 		try { child.kill("SIGKILL"); } catch (e) { /* ignore */ }
 	}
 }, FREEZE_CHECK_MS);
+
+// Login/loading hang: the process is alive and sends heartbeats but never said READY.
+// Kill it so recovery can put it on the next account instead of hanging forever.
+setInterval(() => {
+	if (!isChildRunning() || ready || shuttingDown) return;
+	if (Date.now() - childStartedAt < STARTUP_TIMEOUT_MS) return;
+	log("STARTUP_TIMEOUT", `No READY after ${Math.round(STARTUP_TIMEOUT_MS / 1000)}s. Killing this login attempt...`);
+	lastHeartbeat = Date.now();
+	try { child.kill("SIGKILL"); } catch (e) { /* ignore */ }
+}, Math.max(200, Math.min(FREEZE_CHECK_MS, 30000)));
 
 // A status line in the logs every 10 minutes.
 setInterval(() => {
@@ -789,6 +849,7 @@ function shutdown(signal) {
 	shuttingDown = true;
 	log("SHUTDOWN", `${signal} received. Cleaning up...`);
 	if (restartTimer) clearTimeout(restartTimer);
+	nextRestartAt = 0;
 	leaveWolfTimer();
 	stopOfflinePoll();
 	if (publicServer) try { publicServer.close(); } catch (e) { /* ignore */ }
@@ -817,6 +878,10 @@ process.stderr.on("error", () => { /* same */ });
 
 (async () => {
 	log("ENV", `Node ${process.version} | ${process.platform}/${process.arch} | memory limit ${MEM_LIMIT_MB}MB`);
+	if (process.env.VERCEL === "1" && process.env.ALIYA_SERVERLESS_BOT !== "1") {
+		log("SERVERLESS", "Vercel uses api/status.js for the status page. A Messenger bot cannot stay online on a serverless function; deploy the bot on Render/Railway/Replit/VPS.");
+		return; // never spawn a long-running child inside a serverless invocation
+	}
 	if (useProxy) {
 		try {
 			await openPublicServer();

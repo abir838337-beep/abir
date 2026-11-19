@@ -13,7 +13,6 @@ catch (e) {
 
 const sep = path.sep;
 const currentConfig = require('./config.json');
-const langCode = currentConfig.language || "en";
 const execSync = require('child_process').execSync;
 
 const REPO_OWNER = "mrking-svg";
@@ -36,37 +35,11 @@ function compareVersions(left, right) {
 	return 0;
 }
 
-let pathLanguageFile = `${process.cwd()}/languages/${langCode}.lang`;
-if (!fs.existsSync(pathLanguageFile)) {
-	log.warn("LANGUAGE", `Can't find language file ${langCode}, using default language file "${path.normalize(`${process.cwd()}/languages/en.lang`)}"`);
-	pathLanguageFile = `${process.cwd()}/languages/en.lang`;
-}
-const readLanguage = fs.readFileSync(pathLanguageFile, "utf-8");
-const languageData = readLanguage
-	.split(/\r?\n|\r/)
-	.filter(line => line && !line.trim().startsWith("#") && !line.trim().startsWith("//") && line != "");
-
-global.language = {};
-for (const sentence of languageData) {
-	const getSeparator = sentence.indexOf('=');
-	const itemKey = sentence.slice(0, getSeparator).trim();
-	const itemValue = sentence.slice(getSeparator + 1, sentence.length).trim();
-	const head = itemKey.slice(0, itemKey.indexOf('.'));
-	const key = itemKey.replace(head + '.', '');
-	const value = itemValue.replace(/\\n/gi, '\n');
-	if (!global.language[head])
-		global.language[head] = {};
-	global.language[head][key] = value;
-}
-
-function getText(head, key, ...args) {
-	if (!global.language[head]?.[key])
-		return `Can't find text: "${head}.${key}"`;
-	let text = global.language[head][key];
-	for (let i = args.length - 1; i >= 0; i--)
-		text = text.replace(new RegExp(`%${i + 1}`, 'g'), args[i]);
-	return text;
-}
+// Use the same language loader as the bot, so a missing translation file or key
+// falls back to en.lang everywhere (including during an update).
+global.GoatBot = global.GoatBot || {};
+global.GoatBot.config = global.GoatBot.config || currentConfig;
+const getText = require('./languages/makeFuncGetLangs.js');
 
 const defaultWriteFileSync = fs.writeFileSync;
 const defaulCopyFileSync = fs.copyFileSync;

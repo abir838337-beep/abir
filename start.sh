@@ -19,8 +19,13 @@ if [ -n "$TERMUX_VERSION" ] || [ -d /data/data/com.termux ]; then
 fi
 
 if [ ! -d node_modules/express ]; then
-  echo "📦 Installing dependencies (first run)..."
-  npm install --omit=dev --no-audit --no-fund || { echo "❌ npm install failed"; exit 1; }
+  if [ -n "$TERMUX_VERSION" ] || [ -d /data/data/com.termux ]; then
+    echo "📦 Termux detected - running the Termux installer..."
+    bash ./termux-setup.sh || { echo "❌ Termux setup failed"; exit 1; }
+  else
+    echo "📦 Installing dependencies (first run)..."
+    npm install --omit=dev --no-audit --no-fund || { echo "❌ npm install failed"; exit 1; }
+  fi
 fi
 
 case "$1" in

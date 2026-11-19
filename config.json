@@ -11,7 +11,7 @@
   },
   "antiInbox": false,
   "language": "en",
-  "notesLanguage": "change to your language with ISO 639-1 code, available languages: vi (Vietnamese), en (English)",
+  "notesLanguage": "change to your language with an ISO 639-1 code, for example en or bn; missing language files or keys fall back to English",
   "adminOnly": {
     "enable": false,
     "ignoreCommand": []
@@ -54,8 +54,17 @@
   },
   "nickNameBot": "Aliya Official",
   "prefix": "(",
+  "typingIndicator": {
+    "enable": true,
+    "refreshMs": 5000,
+    "onReply": true,
+    "onReaction": true,
+    "notes": "shows the bot is typing while a command runs; refreshMs keeps it visible on slow commands"
+  },
   "database": {
     "type": "sqlite",
+    "fallbackToJson": true,
+    "notes": "sqlite3 is the fast primary store. If its native binding is missing or incompatible, the bot automatically uses the built-in JSON database instead of stopping.",
     "uriMongodb": "",
     "autoSyncWhenStart": false,
     "autoRefreshThreadInfoFirstTime": true

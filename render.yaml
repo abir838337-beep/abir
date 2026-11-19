@@ -3,15 +3,19 @@ services:
     name: aliya-bot
     runtime: node
     plan: free
-    buildCommand: npm install --omit=dev
+    buildCommand: npm install --omit=dev --no-audit --no-fund
     startCommand: npm start
     healthCheckPath: /health
     envVars:
-      - key: APPSTATE
+      - key: ACCOUNT_TXT
         sync: false
-      - key: ADMIN_IDS
+      - key: ACCOUNT2_TXT
         sync: false
-      - key: ANTHROPIC_API_KEY
+      - key: ACCOUNT3_TXT
         sync: false
-      - key: GEMINI_API_KEY
+      - key: ACCOUNT4_TXT
         sync: false
+      - key: ACCOUNT5_TXT
+        sync: false
+      - key: ALIYA_SELF_PING
+        value: "1"

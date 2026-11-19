@@ -18,8 +18,12 @@
  *               Every few minutes it hands control back to Aliya.js (exit code 3) - sooner when the core
  *               files are healthy, later (never) while a core file still has a syntax error.
  *
- * Exit codes   3 = finished, start Aliya.js again   2 = restart Wolf (session lost / listener keeps failing)
- *              11 = `account` command asked for another account   anything else = crash
+ * Exit codes   3 = every account failed -> index.js shows the "Restarting / Offline" page
+ *              7 = fast restart requested (hand-back to Aliya.js / admin account switch)
+ *              5 = active account died -> restart on the next account
+ *              6 = npm package missing -> index.js installs it
+ *              2 = restart Wolf (listener keeps failing / session lost)
+ *              anything else = crash (index.js applies back-off)
  * Needs only Node itself until the engine starts, so it works even with an empty node_modules.
  * ============================================================================
  */
@@ -59,7 +63,7 @@ process.on("uncaughtException", e => {
 process.on("SIGTERM", () => process.exit(0));
 process.on("SIGINT", () => process.exit(0));
 
-const hb = () => send({ type: "heartbeat", rss: process.memoryUsage().rss });
+const hb = () => send({ type: "HEARTBEAT", rss: process.memoryUsage().rss });
 hb();
 setInterval(hb, 15000).unref();
 
@@ -84,6 +88,14 @@ const NPM_LIMIT_PER_HOUR = 3;
 let pool = null;
 try { pool = require("./bot/login/accountPool.js"); }
 catch (e) { say("POOL", `accountPool.js not usable (${e.message}). The engine is disabled, the doctor still works.`); }
+
+let typing = null;
+try { typing = require("./bot/handler/typingIndicator.js"); }
+catch (e) { typing = null; }
+
+let commandLanguage = null;
+try { commandLanguage = require("./bot/handler/commandLanguage.js"); }
+catch (e) { commandLanguage = null; }
 
 // ═════════════════════════════════ 1. DOCTOR ═════════════════════════════════ //
 
@@ -310,10 +322,10 @@ async function analyzeCrash(log) {
 
 // `node --check` every core file: a syntax error there is the most common reason Aliya.js cannot start
 const CORE_FILES = [
-	"Aliya.js", "accountManager.js", "utils.js",
-	"bot/login/login.js", "bot/login/loadData.js", "bot/login/loadScripts.js", "bot/login/accountPool.js",
-	"bot/handler/handlerAction.js", "bot/handler/handlerEvents.js", "bot/handler/handlerCheckData.js",
-	"database/connect/connectSqlite.js"
+	"Aliya.js", "utils.js",
+	"bot/login/login.js", "bot/login/loadData.js", "bot/login/loadScripts.js", "bot/login/accountPool.js", "bot/login/accountManager.js",
+	"bot/handler/handlerAction.js", "bot/handler/handlerEvents.js", "bot/handler/handlerCheckData.js", "bot/handler/typingIndicator.js",
+	"database/connectDB/connectSqlite.js", "database/controller/index.js", "bot/handler/commandLanguage.js"
 ];
 
 function syntaxCheck(file) {
@@ -531,12 +543,15 @@ function loadScriptsBuiltIn() {
 	return ok;
 }
 
-function makeGetLang(mod) {
+function makeGetLang(mod, folder = "cmds") {
 	const code = config.language || "en";
+	if (commandLanguage && typeof commandLanguage.createGetText2 === "function")
+		return commandLanguage.createGetText2(code, folder, prefixOf(), mod || { config: {} });
+
 	return (key, ...a) => {
-		const langs = mod.langs || {};
+		const langs = (mod && mod.langs) || {};
 		let text = (langs[code] && langs[code][key]) || (langs.en && langs.en[key]) || key;
-		a.forEach((v, i) => { text = text.replace(new RegExp(`%${i + 1}`, "g"), v); });
+		a.forEach((v, i) => { text = text.replace(new RegExp(`%${i + 1}`, "g"), () => String(v)); });
 		return text;
 	};
 }
@@ -575,21 +590,28 @@ async function dispatchBuiltIn(api, event) {
 	// the role is worked out PER EVENT (a shared variable could hand an admin's role to the next user)
 	const roleCache = {};
 	const getRole = async mod => (roleCache[mod && mod.config.name || "_"] = roleCache[mod && mod.config.name || "_"] ?? await roleOf(api, event, mod));
-	const ctx = async (mod, extra) => Object.assign({
+	const ctx = async (mod, extra, folder = "cmds") => Object.assign({
 		api, event, message: makeMessage(api, event), threadsData: stubData, usersData: stubData, globalData: stubData, dashBoardData: stubData,
-		getLang: makeGetLang(mod), role: await getRole(mod), commandName: mod.config.name, args: [], envCommands: global.GoatBot.envCommands,
-		envGlobal: global.GoatBot.envGlobal, threadModel: null, userModel: null
+		getLang: makeGetLang(mod, folder), role: await getRole(mod), commandName: mod.config.name, args: [], envCommands: global.GoatBot.envCommands,
+		envGlobal: global.GoatBot.envGlobal, threadModel: null, userModel: null, prefix: prefixOf(event.threadID)
 	}, extra);
+	const startTyping = kind => (typing ? typing.start(api, event.threadID, kind) : { stop() { } });
 
 	if (type === "message" || type === "message_reply") {
 		const body = String(event.body || "");
 		const prefix = prefixOf(event.threadID);
+		try {
+			if (global.dailyMessageTracker && String(event.senderID) !== String(state.uid))
+				global.dailyMessageTracker(event.senderID);
+		} catch (e) { }
 
 		if (type === "message_reply" && event.messageReply) {
 			const rep = global.GoatBot.onReply.get(event.messageReply.messageID);
 			const mod = rep && global.GoatBot.commands.get(rep.commandName);
 			if (mod && typeof mod.onReply === "function") {
-				await mod.onReply(await ctx(mod, { Reply: rep, args: body.split(/\s+/) }));
+				const handle = startTyping("reply");
+				try { await mod.onReply(await ctx(mod, { Reply: rep, args: body.split(/\s+/) })); }
+				finally { handle.stop(); }
 				return;
 			}
 		}
@@ -605,7 +627,16 @@ async function dispatchBuiltIn(api, event) {
 			const wait = Number(mod.config.countDown || 0) * 1000;
 			if (wait && cooldowns.get(cdKey) > Date.now()) return api.sendMessage(`⏳ Wait ${Math.ceil((cooldowns.get(cdKey) - Date.now()) / 1000)}s.`, event.threadID, undefined, event.messageID);
 			if (wait) cooldowns.set(cdKey, Date.now() + wait);
-			await (mod.onStart || mod.run)(await ctx(mod, { args }));
+			const handle = startTyping("command");
+			try {
+				try {
+					if (typeof global.dailyTaskTracker === "function")
+						global.dailyTaskTracker(event.senderID, mod.config.name);
+				}
+				catch (e) { /* task tracking must never break a command */ }
+				await (mod.onStart || mod.run)(await ctx(mod, { args }));
+			}
+			finally { handle.stop(); }
 			return;
 		}
 		for (const key of global.GoatBot.onChat) {
@@ -616,7 +647,11 @@ async function dispatchBuiltIn(api, event) {
 	else if (type === "message_reaction") {
 		const rec = global.GoatBot.onReaction.get(event.messageID);
 		const mod = rec && global.GoatBot.commands.get(rec.commandName);
-		if (mod && typeof mod.onReaction === "function") await mod.onReaction(await ctx(mod, { Reaction: rec }));
+		if (mod && typeof mod.onReaction === "function") {
+			const handle = startTyping("reaction");
+			try { await mod.onReaction(await ctx(mod, { Reaction: rec })); }
+			finally { handle.stop(); }
+		}
 	}
 	for (const key of global.GoatBot.onEvent) {
 		const mod = global.GoatBot.commands.get(key);
@@ -624,47 +659,105 @@ async function dispatchBuiltIn(api, event) {
 	}
 	if (type === "event") {
 		for (const mod of global.GoatBot.eventCommands.values()) {
-			try { if (typeof mod.onStart === "function") await mod.onStart(await ctx(mod, {})); } catch (e) { /* ignore */ }
+			try { if (typeof mod.onStart === "function") await mod.onStart(await ctx(mod, {}, "events")); } catch (e) { /* ignore */ }
 		}
 	}
 }
 
-// ───────────── Layer 3: minimal commands ───────────── //
+// ───────────── Layer 3: minimal commands (work even if every command file is broken) ───────────── //
+function quickEngineRestart() {
+	setTimeout(() => process.exit(supervised ? 7 : 0), 1200);
+}
+
 async function minimal(api, event) {
 	if (event.type !== "message" && event.type !== "message_reply") return;
 	const body = String(event.body || "").trim();
 	const prefix = prefixOf(event.threadID);
 	if (!body.startsWith(prefix)) return;
-	const cmd = body.slice(prefix.length).trim().split(/\s+/)[0].toLowerCase();
+	const parts = body.slice(prefix.length).trim().split(/\s+/);
+	const cmd = (parts.shift() || "").toLowerCase();
 	const reply = t => api.sendMessage(t, event.threadID, undefined, event.messageID);
 	const isAdmin = (config.adminBot || []).map(String).includes(String(event.senderID));
-	if (cmd === "ping") return reply("🏓 Pong (Wolf safe mode)");
-	if (cmd === "help" || cmd === "wolf") return reply(`🐺 Wolf safe mode is running (layer: ${state.layer}).\nAccount: ${state.active}\nThe main engine is retried automatically.\nCommands: ${prefix}ping, ${prefix}help${isAdmin ? `, ${prefix}account` : ""}`);
-	if (cmd === "account" && isAdmin && pool) {
-		const table = pool.statusTable({ active: state.active });
-		return reply(`🐺 ─── ACCOUNTS ─── 🌸\n${table.map(r => `• ${r.file}: ${r.status}${r.detail ? ` (${r.detail})` : ""}`).join("\n")}`);
+
+	if (cmd === "ping") return reply("Pong (Wolf safe mode)");
+	if (cmd === "help" || cmd === "wolf") {
+		return reply(
+			`Wolf safe mode is running (layer: ${state.layer}).\n` +
+			`Account: ${state.active || "none"}\n` +
+			`The main engine is retried automatically.\n` +
+			`Commands: ${prefix}ping | ${prefix}help${isAdmin && pool ? ` | ${prefix}account` : ""}`
+		);
 	}
+	if (cmd !== "account" || !isAdmin || !pool) return;
+
+	const sub = (parts[0] || "status").toLowerCase();
+	const arg = parts[1];
+	if (["status", "list", "info"].includes(sub)) {
+		const rows = pool.statusTable({ active: state.active });
+		const forced = pool.getForced();
+		let out = "ALIYA ACCOUNT POOL STATUS (Wolf safe mode)\n=============================\n";
+		out += `Active now : ${state.active || "none"}\n`;
+		out += `Forced slot: ${forced || "none (auto order)"}\n`;
+		out += "=============================\n";
+		for (const r of rows) out += `${r.slot}. ${r.icon} ${r.file}\n   status : ${r.status}${r.detail ? `\n   info   : ${r.detail}` : ""}\n`;
+		out += `Commands: ${prefix}account switch <1-5> | ${prefix}account next | ${prefix}account reset <1-5|all> | ${prefix}account auto`;
+		return reply(out);
+	}
+	if (["switch", "use", "set"].includes(sub)) {
+		const r = pool.switchTo(arg || "");
+		if (!r.ok) return reply(`Cannot switch: ${r.reason}. Use ${prefix}account status to see the slots.`);
+		await reply(`Switching to slot ${r.slot} (${r.file}). Restarting now...`);
+		return quickEngineRestart();
+	}
+	if (["next", "rotate", "skip"].includes(sub)) {
+		const n = pool.nextAvailable(state.active);
+		if (!n) return reply("No other healthy account available right now.");
+		const r = pool.switchTo(n.slot);
+		if (!r.ok) return reply(`Cannot switch to ${n.file}: ${r.reason}`);
+		await reply(`Rotating to slot ${n.slot} (${n.file}). Restarting now...`);
+		return quickEngineRestart();
+	}
+	if (sub === "reset") {
+		if (String(arg).toLowerCase() === "all") {
+			for (let n = 1; n <= pool.SLOTS; n++) pool.resetSlot(n);
+			await reply("All slots reset. Every account will be tried again.");
+			return quickEngineRestart();
+		}
+		const n = pool.slotOf(arg) || (Number(arg) >= 1 && Number(arg) <= pool.SLOTS ? Number(arg) : 0);
+		if (!n) return reply(`Usage: ${prefix}account reset <1-5|all>`);
+		pool.resetSlot(n);
+		await reply(`Slot ${n} (${pool.FILES[n - 1]}) was reset. Restarting now...`);
+		return quickEngineRestart();
+	}
+	if (sub === "auto" || sub === "clear") {
+		pool.clearPreferred();
+		await reply("Forced switch removed. Login order is account.txt first again. Restarting now...");
+		return quickEngineRestart();
+	}
+	return reply(`Unknown option. Use ${prefix}account status | switch <1-5> | next | reset <1-5|all> | auto`);
 }
 
 // ───────────── login with the pool ───────────── //
 async function loginFromPool() {
-	const { usable } = pool.candidates(); // resting accounts are NOT retried here: that would hammer Facebook
+	// Healthy slots first; resting/failed slots are still tried as a last resort.
+	const { usable, deadOnes } = pool.candidates();
+	const attemptOrder = [...usable, ...deadOnes];
 	const results = {};
 	let api = null;
 	let file = null;
 	let tried = 0;
 	let netFails = 0;
-	for (const name of usable) {
+	for (const name of attemptOrder) {
 		let appState;
 		try { appState = await pool.parse(pool.readText(name), { iUser: (config.facebookAccount || {}).i_user }); }
 		catch (e) { results[name] = { status: "INVALID FORMAT", detail: pool.short(e.message, 80) }; continue; }
 		tried++;
-		say("AUTH", `Trying ${name}...`);
+		say("AUTH", `Trying ${name}${deadOnes.includes(name) ? " (last resort)" : ""}...`);
 		let r = null;
 		for (let i = 1; i <= 2; i++) {
 			r = await pool.tryLogin(appState, config.optionsFca || {}, 45000);
 			if (r.ok) break;
-			if (r.fatal) { say("FCA", "No Facebook chat library installed (npm install)."); return process.exit(supervised ? 1 : 1); }
+			if (r.fatal) { say("FCA", "No Facebook chat library installed - asking index.js to install it."); return process.exit(supervised ? 6 : 1); }
 			if (pool.classify(r.error).kind !== "network") break;
 			await sleep(i * 4000);
 		}
@@ -681,7 +774,7 @@ async function loginFromPool() {
 	state.table = pool.statusTable({ active: file, results });
 	global.GoatBot.accountPoolStatus = pool.toObject(state.table);
 	for (const row of state.table) console.log(`  • ${row.file.padEnd(13)} => ${row.status} (${row.detail})`);
-	return { api, file, tried, netFails, count: usable.length };
+	return { api, file, tried, netFails, count: attemptOrder.length };
 }
 
 function goOffline(why) {
@@ -690,8 +783,16 @@ function goOffline(why) {
 	state.layer = "offline";
 	state.retryAt = Date.now() + RETRY_MS;
 	global.GoatBot.poolOffline = true;
-	say("OFFLINE", `${why}. The Restarting page is live; checking the cookie files again in ${Math.round(RETRY_MS / 1000)}s.`);
-	setTimeout(() => engineMain().catch(fatal), RETRY_MS);
+	say("OFFLINE", `${why}. The Restarting / Offline page is live.`);
+	send({ type: "ALL_ACCOUNTS_FAILED", pool: state.table, reason: why });
+	if (supervised) {
+		// Let index.js own the retry back-off and the offline page.
+		setTimeout(() => process.exit(3), 700);
+		return;
+	}
+	// Standalone (no index.js): keep this process alive and retry by itself.
+	say("OFFLINE", `Checking the cookie files again in ${Math.round(RETRY_MS / 1000)}s.`);
+	setTimeout(() => { state.offline = false; engineMain().catch(fatal); }, RETRY_MS);
 }
 
 function fatal(e) {
@@ -725,7 +826,7 @@ function die(file, kind, reason) {
 	say("SESSION_LOST", `${file} ${kind === "suspended" ? "is SUSPENDED / LOCKED" : "got LOGGED OUT"}: ${pool.short(reason, 100)}. Next account...`);
 	try { pool.markDead(file, kind, reason); } catch (e) { /* ignore */ }
 	try { stopListening(); } catch (e) { /* ignore */ }
-	setTimeout(() => process.exit(supervised ? 2 : 1), 800); // index.js starts Wolf again -> the next account is used
+	setTimeout(() => process.exit(supervised ? 5 : 1), 800); // 5 = next account (index.js keeps the server online)
 }
 
 function recover(why, handle, file) {
@@ -733,7 +834,7 @@ function recover(why, handle, file) {
 	const t = Date.now();
 	failTimes.push(t);
 	while (failTimes.length && t - failTimes[0] > 10 * 60 * 1000) failTimes.shift();
-	if (failTimes.length >= 4) { say("LISTEN", "Keeps failing - restarting Wolf"); return process.exit(supervised ? 2 : 1); }
+	if (failTimes.length >= 4) { say("LISTEN", "Keeps failing - restarting the engine"); return process.exit(supervised ? 7 : 1); }
 	const delay = 5000 * failTimes.length;
 	say("LISTEN", `Lost (${why}). Reconnecting in ${delay / 1000}s...`);
 	relistenTimer = setTimeout(() => {
@@ -833,6 +934,7 @@ async function engineMain() {
 	global.client.dirAccount = pool.filePath(file);
 	pool.setActive(file, uid);
 	pool.clearPreferred();
+	send({ type: "POOL", pool: state.table, active: file });
 	say("SUCCESS", `Logged in with ${file} (UID ${uid})`);
 
 	// keep the cookie fresh without ever overwriting a cookie you just pasted
@@ -861,7 +963,7 @@ async function engineMain() {
 	state.started = true;
 	state.phase = "online";
 	say("READY", `Wolf is online on ${file} | layer ${layer}`);
-	send({ type: "ready", account: file });
+	send({ type: "READY", account: file, pool: state.table });
 }
 
 // ═════════════════════════════════ 4. LIFECYCLE ═════════════════════════════════ //
@@ -877,7 +979,9 @@ async function handBack(reason) {
 	saveWolfState(st);
 	try { stopListening(); } catch (e) { /* ignore */ }
 	try { if (pool) pool.setActive(null); } catch (e) { /* ignore */ }
-	setTimeout(() => process.exit(3), 700);
+	send({ type: "ENGINE_HANDBACK" });
+	// 7 is a planned fast restart, NOT "all accounts failed" (code 3).
+	setTimeout(() => process.exit(supervised ? 7 : 0), 700);
 }
 
 (async () => {
